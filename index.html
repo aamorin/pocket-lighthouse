@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Pocket Lighthouse</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hud" aria-label="Voyage status">
+        <div>
+          <span class="label">Saved</span>
+          <strong id="score">0</strong>
+        </div>
+        <div>
+          <span class="label">Streak</span>
+          <strong id="streak">0</strong>
+        </div>
+        <div>
+          <span class="label">Storm</span>
+          <strong id="storm">Calm</strong>
+        </div>
+        <div>
+          <span class="label">Light</span>
+          <strong id="charge">100%</strong>
+        </div>
+      </section>
+
+      <canvas id="game" aria-label="Pocket Lighthouse game" role="img"></canvas>
+
+      <section class="controls" aria-label="Controls">
+        <button id="left" type="button" aria-label="Sweep light left">‹</button>
+        <button id="pulse" type="button">Pulse</button>
+        <button id="right" type="button" aria-label="Sweep light right">›</button>
+      </section>
+
+      <section class="dock">
+        <button id="start" type="button">Begin Watch</button>
+        <p id="status">Turn the beacon. Keep boats in the light until they reach harbor.</p>
+      </section>
+    </main>
+
+    <script src="./game.js"></script>
+  </body>
+</html>
