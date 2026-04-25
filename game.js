@@ -425,7 +425,7 @@ function update(dt) {
     const bowX = boat.x + Math.cos(bowAngle) * boat.size * 1.15;
     const bowY = boat.y + Math.sin(bowAngle) * boat.size * 1.15;
     const distToIsland = Math.hypot(bowX - harbor.x, bowY - harbor.y);
-    const arrived = distToIsland < harbor.r && boat.guidance > 0.32;
+    const arrived = distToIsland < harbor.r;
     const wrecked = boatHitsRock(boat);
     const hitIsland = boatHitsIsland(boat);
     const w = canvas.clientWidth; const h = canvas.clientHeight;
