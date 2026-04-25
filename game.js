@@ -922,7 +922,8 @@ function drawBoat(boat) {
   const s = boat.size;
   ctx.save();
 
-  if (boat.panic > 0.48) {
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (boat.panic > 0.48 && boat.x >= 0 && boat.x <= cw && boat.y >= 0 && boat.y <= ch) {
     const warning = (boat.panic - 0.48) / 0.52;
     ctx.globalAlpha = (0.16 + warning * 0.38) * (0.65 + Math.sin(state.time * 8 + boat.bob) * 0.35);
     ctx.strokeStyle = "#ff3820";
