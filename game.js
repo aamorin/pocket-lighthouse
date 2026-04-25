@@ -28,6 +28,7 @@ const state = {
   time: 0,
   weatherLevel: 0,
   weatherTimer: 0,
+  wildDuration: 0,
   boats: [],
   monsters: [],
   sparks: [],
@@ -142,7 +143,7 @@ function spawnBoat() {
   });
 }
 
-function spawnMonster() {
+function spawnMonster(big) {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   const cx = lighthouse.x;
@@ -152,7 +153,7 @@ function spawnMonster() {
     x = rand(40, w - 40);
     y = rand(40, h - 40);
   } while (Math.hypot(x - cx, y - cy) < 160);
-  state.monsters.push({ x, y, vx: 0, vy: 0, lit: 0, visible: 0, phase: rand(0, Math.PI * 2) });
+  state.monsters.push({ x, y, vx: 0, vy: 0, lit: 0, visible: 0, phase: rand(0, Math.PI * 2), big: !!big, size: big ? 28 : 14 });
 }
 
 function seedRain(w, h) {
@@ -333,13 +334,21 @@ function update(dt) {
   state.charge = Math.min(100, state.charge + dt * 5.5);
   state.upgradeFlash = Math.max(0, state.upgradeFlash - dt);
 
-  // Weather evolution: gets worse every 25–40 s
+  // Weather evolution: escalates then breaks and cycles
   state.weatherTimer += dt;
-  const weatherInterval = 38 - state.weatherLevel * 5;
-  if (state.weatherTimer > weatherInterval && state.weatherLevel < 4) {
-    state.weatherLevel = Math.min(4, state.weatherLevel + 1);
+  if (state.weatherLevel < 4) {
+    const weatherInterval = 38 - state.weatherLevel * 5;
+    if (state.weatherTimer > weatherInterval) {
+      state.weatherLevel++;
+      state.weatherTimer = 0;
+      if (state.weatherLevel === 4) state.wildDuration = rand(25, 42);
+      statusEl.textContent = ["", "Mist rolling in. Keep the light steady.", "Rain! Boats lose their way faster.", "Gale force winds — boats panic without light.", "Wild storm! Every second in the dark is dangerous."][state.weatherLevel];
+    }
+  } else if (state.weatherTimer > state.wildDuration) {
+    // Storm breaks — drop back to Mist and let it climb again
+    state.weatherLevel = 1;
     state.weatherTimer = 0;
-    statusEl.textContent = ["", "Mist rolling in. Keep the light steady.", "Rain! Boats lose their way faster.", "Gale force winds — boats panic without light.", "Wild storm! Every second in the dark is dangerous."][state.weatherLevel];
+    statusEl.textContent = "Storm breaking. A brief calm…";
   }
 
   // Lighthouse upgrades at score milestones
@@ -367,6 +376,10 @@ function update(dt) {
   // Spawn sea monsters when stormy
   if (stormLevel >= 2 && Math.random() < dt * 0.04 * (stormLevel - 1) && state.monsters.length < stormLevel) {
     spawnMonster();
+  }
+  // Spawn a leviathan under wild weather — only one at a time
+  if (stormLevel >= 4 && Math.random() < dt * 0.008 && !state.monsters.some(m => m.big)) {
+    spawnMonster(true);
   }
 
   // Guidance decay rate scales with weather
@@ -465,17 +478,21 @@ function update(dt) {
   // Update monsters
   for (let i = state.monsters.length - 1; i >= 0; i--) {
     const m = state.monsters[i];
-    m.lit = monsterInBeam(m) ? Math.min(1, m.lit + dt * 2.5) : Math.max(0, m.lit - dt * 1.2);
+    const litRate = m.big ? 1.1 : 2.5;
+    const litDecay = m.big ? 0.5 : 1.2;
+    m.lit = monsterInBeam(m) ? Math.min(1, m.lit + dt * litRate) : Math.max(0, m.lit - dt * litDecay);
     m.visible = Math.min(1, m.visible + dt * 0.8);
     m.size = m.size ?? 14;
 
+    const fleeForce = m.big ? 35 : 60;
+    const huntForce = m.big ? 16 : 28;
     if (m.lit > 0.4) {
       // Flee from beam
       const lamp = lampPoint();
       const dx = m.x - lamp.x; const dy = m.y - lamp.y;
       const dist = Math.hypot(dx, dy);
-      m.vx += (dx / dist) * dt * 60;
-      m.vy += (dy / dist) * dt * 60;
+      m.vx += (dx / dist) * dt * fleeForce;
+      m.vy += (dy / dist) * dt * fleeForce;
     } else {
       // Hunt nearest unlit boat
       let target = null; let bestDist = Infinity;
@@ -487,16 +504,18 @@ function update(dt) {
       if (target) {
         const dx = target.x - m.x; const dy = target.y - m.y;
         const dist = Math.hypot(dx, dy);
-        m.vx += (dx / dist) * dt * 28;
-        m.vy += (dy / dist) * dt * 28;
+        m.vx += (dx / dist) * dt * huntForce;
+        m.vy += (dy / dist) * dt * huntForce;
       }
     }
-    m.vx *= 0.92; m.vy *= 0.92;
+    const drag = m.big ? 0.94 : 0.92;
+    m.vx *= drag; m.vy *= drag;
     m.x += m.vx * dt; m.y += m.vy * dt;
 
     const w = canvas.clientWidth; const h = canvas.clientHeight;
-    if (m.lit > 0.85 || m.x < -80 || m.x > w + 80 || m.y < -80 || m.y > h + 80) {
-      if (m.lit > 0.85) burst(m.x, m.y, "#5588ff", 14);
+    const banishThreshold = m.big ? 0.92 : 0.85;
+    if (m.lit > banishThreshold || m.x < -80 || m.x > w + 80 || m.y < -80 || m.y > h + 80) {
+      if (m.lit > banishThreshold) burst(m.x, m.y, m.big ? "#ff88ff" : "#5588ff", m.big ? 24 : 14);
       state.monsters.splice(i, 1);
     }
   }
@@ -678,17 +697,20 @@ function drawMonsters() {
     const inBeam = monsterInBeam(m);
     ctx.globalAlpha = m.visible * (inBeam ? 0.7 : 0.55);
     const t = state.time * 1.2 + m.phase;
-    const tentacleColor = inBeam ? "rgba(80, 30, 120, 0.9)" : "rgba(10, 10, 40, 0.85)";
+    const tentacleColor = m.big
+      ? (inBeam ? "rgba(120, 0, 80, 0.95)" : "rgba(5, 0, 25, 0.92)")
+      : (inBeam ? "rgba(80, 30, 120, 0.9)" : "rgba(10, 10, 40, 0.85)");
     m.size = m.size ?? 14;
+    const numTentacles = m.big ? 8 : 6;
 
     // Tentacles
     ctx.strokeStyle = tentacleColor;
     ctx.lineCap = "round";
-    for (let i = 0; i < 6; i++) {
-      const baseAngle = (i / 6) * Math.PI * 2 + t * 0.3;
+    for (let i = 0; i < numTentacles; i++) {
+      const baseAngle = (i / numTentacles) * Math.PI * 2 + t * (m.big ? 0.18 : 0.3);
       const len = m.size * (1.4 + Math.sin(t + i) * 0.4);
       const curl = Math.sin(t * 1.5 + i * 1.1) * 0.6;
-      ctx.lineWidth = 3 - i * 0.2;
+      ctx.lineWidth = m.big ? 5 - i * 0.2 : 3 - i * 0.2;
       ctx.beginPath();
       ctx.moveTo(m.x, m.y);
       const mx1 = m.x + Math.cos(baseAngle + curl * 0.5) * len * 0.5;
@@ -699,20 +721,30 @@ function drawMonsters() {
       ctx.stroke();
     }
     // Body
-    ctx.fillStyle = inBeam ? "rgba(100, 40, 160, 0.8)" : "rgba(15, 10, 50, 0.8)";
-    ctx.beginPath();
-    ctx.arc(m.x, m.y, m.size * 0.7, 0, Math.PI * 2);
-    ctx.fill();
-    // Eyes (glow when in beam)
-    if (inBeam) {
-      ctx.fillStyle = "rgba(200, 100, 255, 0.9)";
+    if (m.big) {
+      ctx.fillStyle = inBeam ? "rgba(160, 0, 100, 0.85)" : "rgba(8, 0, 30, 0.92)";
     } else {
-      ctx.fillStyle = "rgba(255, 40, 40, 0.85)";
+      ctx.fillStyle = inBeam ? "rgba(100, 40, 160, 0.8)" : "rgba(15, 10, 50, 0.8)";
     }
-    for (const ex of [-m.size * 0.22, m.size * 0.22]) {
-      ctx.beginPath();
-      ctx.arc(m.x + ex, m.y - m.size * 0.08, m.size * 0.12, 0, Math.PI * 2);
-      ctx.fill();
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.size * 0.75, 0, Math.PI * 2);
+    ctx.fill();
+    // Eyes
+    if (m.big) {
+      // Three eyes for the leviathan
+      ctx.fillStyle = inBeam ? "rgba(255, 160, 255, 0.95)" : "rgba(255, 20, 20, 0.95)";
+      for (const ex of [-m.size * 0.28, 0, m.size * 0.28]) {
+        ctx.beginPath();
+        ctx.arc(m.x + ex, m.y - m.size * 0.1, m.size * 0.13, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = inBeam ? "rgba(200, 100, 255, 0.9)" : "rgba(255, 40, 40, 0.85)";
+      for (const ex of [-m.size * 0.22, m.size * 0.22]) {
+        ctx.beginPath();
+        ctx.arc(m.x + ex, m.y - m.size * 0.08, m.size * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
   ctx.restore();
