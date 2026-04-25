@@ -19,13 +19,17 @@ const state = {
   charge: 100,
   beamAngle: -Math.PI / 2,
   beamWidth: 0.34,
-  beamReach: 360,
+  beamReach: 300,
+  beamSpeed: 2.45,
   turnInput: 0,
   pulse: 0,
   lastSpawn: 0,
-  spawnEvery: 2500,
+  spawnEvery: 3200,
   time: 0,
+  weatherLevel: 0,
+  weatherTimer: 0,
   boats: [],
+  monsters: [],
   sparks: [],
   floaters: [],
   rain: [],
@@ -35,23 +39,50 @@ const state = {
   shake: 0,
   flash: 0,
   flashColor: "#ffd36a",
+  upgradeLevel: 0,
+  upgradeFlash: 0,
+  upgradeText: "",
 };
 
-const harbor = { x: 0, y: 0, r: 34 };
+const UPGRADES = [
+  { score: 12, type: "speed", label: "Faster sweep!" },
+  { score: 28, type: "reach", label: "Longer beam!" },
+  { score: 55, type: "width", label: "Wider beam!" },
+];
+
+const ISLAND_R = 34;
+const harbor = { x: 0, y: 0, r: 58 };
 const lighthouse = { x: 0, y: 0, r: 22 };
 const texture = { grain: null, stipple: null };
-const LAMP_OFFSET_Y = -22;
-const BEAM_MIN_ANGLE = -Math.PI + 0.18;
-const BEAM_MAX_ANGLE = -0.18;
+const LAMP_OFFSET_Y = 0;
 
+const LA = {
+  seaDeep: "#0d4a9a",
+  seaMid: "#1868c8",
+  seaShallow: "#2878d8",
+  seaFoam: "#88cef8",
+  land: "#389808",
+  landLight: "#50b818",
+  landDark: "#286000",
+  sand: "#c8a828",
+  sandLight: "#e0c040",
+  sandDark: "#a88020",
+  rock: "#706040",
+  rockLight: "#988858",
+  rockDark: "#403018",
+  wood: "#906028",
+  woodDark: "#60380c",
+  outline: "#201008",
+  gold: "#f0cc30",
+  white: "#e8e8d8",
+  red: "#c82020",
+};
 function lampPoint() {
   return { x: lighthouse.x, y: lighthouse.y + LAMP_OFFSET_Y };
 }
 
 function clampBeamAngle(angle) {
-  const normalized = Math.atan2(Math.sin(angle), Math.cos(angle));
-  if (normalized > 0) return normalized > Math.PI / 2 ? BEAM_MIN_ANGLE : BEAM_MAX_ANGLE;
-  return Math.max(BEAM_MIN_ANGLE, Math.min(BEAM_MAX_ANGLE, normalized));
+  return angle; // full 360° rotation
 }
 
 function resize() {
@@ -61,13 +92,10 @@ function resize() {
   canvas.height = Math.floor(rect.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   lighthouse.x = rect.width / 2;
-  lighthouse.y = rect.height * 0.7;
+  lighthouse.y = rect.height / 2;
   harbor.x = rect.width / 2;
-  harbor.y = lighthouse.y - 48;
+  harbor.y = rect.height / 2;
   seedRain(rect.width, rect.height);
-  seedFoam(rect.width, rect.height);
-  seedSwells();
-  seedClouds(rect.width, rect.height);
   createTextures();
 }
 
@@ -85,21 +113,26 @@ function angleDelta(a, b) {
 
 function spawnBoat() {
   const w = canvas.clientWidth;
-  const side = Math.random() < 0.5 ? -24 : w + 24;
-  const y = rand(64, canvas.clientHeight * 0.56);
-  const drift = rand(-0.12, 0.12);
+  const h = canvas.clientHeight;
+  const side = Math.floor(Math.random() * 4); // 0=top 1=right 2=bottom 3=left
+  let x, y, vx, vy;
+  const margin = 28;
+  if (side === 0)      { x = rand(margin, w - margin); y = -margin; vx = rand(-8, 8); vy = rand(10, 18); }
+  else if (side === 1) { x = w + margin; y = rand(margin, h - margin); vx = rand(-18, -10); vy = rand(-8, 8); }
+  else if (side === 2) { x = rand(margin, w - margin); y = h + margin; vx = rand(-8, 8); vy = rand(-18, -10); }
+  else                 { x = -margin; y = rand(margin, h - margin); vx = rand(10, 18); vy = rand(-8, 8); }
+
+  // Variable boat size → point value
+  const tier = Math.random();
+  const size = tier < 0.55 ? rand(9, 12) : tier < 0.85 ? rand(14, 18) : rand(20, 26);
+  const value = size < 13 ? 1 : size < 19 ? 2 : 3;
+
   state.boats.push({
-    x: side,
-    y,
-    vx: side < 0 ? rand(10, 18) : rand(-18, -10),
-    vy: rand(6, 12),
-    speed: rand(18, 27),
-    lit: 0,
-    guidance: 0,
-    panic: 0,
-    alert: 0,
-    drift,
-    size: rand(9, 13),
+    x, y, vx, vy,
+    speed: rand(16, 26) * (1 - (value - 1) * 0.12), // bigger = slightly slower
+    lit: 0, guidance: 0, panic: 0, alert: 0,
+    drift: rand(-0.10, 0.10),
+    size, value,
     bob: rand(0, Math.PI * 2),
     roll: rand(-0.16, 0.16),
     hullHue: Math.random() < 0.55 ? "paint" : "wood",
@@ -109,29 +142,32 @@ function spawnBoat() {
   });
 }
 
+function spawnMonster() {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const cx = lighthouse.x;
+  const cy = lighthouse.y;
+  let x, y;
+  do {
+    x = rand(40, w - 40);
+    y = rand(40, h - 40);
+  } while (Math.hypot(x - cx, y - cy) < 160);
+  state.monsters.push({ x, y, vx: 0, vy: 0, lit: 0, visible: 0, phase: rand(0, Math.PI * 2) });
+}
+
 function seedRain(w, h) {
-  const count = Math.max(70, Math.floor((w * h) / 4200));
+  const count = 28;
   state.rain = Array.from({ length: count }, () => ({
-    x: rand(0, w),
-    y: rand(0, h),
-    length: rand(7, 18),
-    speed: rand(210, 380),
-    alpha: rand(0.1, 0.34),
+    x: rand(20, w - 20),
+    y: rand(20, h * 0.72),
+    length: rand(10, 22),
+    speed: rand(0.25, 0.7),
+    alpha: rand(0.07, 0.18),
   }));
 }
 
 function seedFoam(w, h) {
-  const count = Math.max(58, Math.floor(w / 7));
-  state.foam = Array.from({ length: count }, () => ({
-    x: rand(0, w),
-    y: rand(h * 0.5, h * 0.98),
-    width: rand(8, 86),
-    speed: rand(6, 28),
-    alpha: rand(0.035, 0.24),
-    thickness: rand(0.45, 1.8),
-    bend: rand(-7, 8),
-    phase: rand(0, Math.PI * 2),
-  }));
+  state.foam = [];
 }
 
 function seedSwells() {
@@ -145,33 +181,7 @@ function seedSwells() {
 }
 
 function seedClouds(w, h) {
-  state.clouds = [
-    makeCloudBank(w * 0.1, h * 0.06, w * 0.68, h * 0.11, 0.1, 0.15, 9),
-    makeCloudBank(w * 0.56, h * 0.1, w * 0.78, h * 0.13, -0.08, 0.11, 10),
-    makeCloudBank(w * 0.24, h * 0.19, w * 0.84, h * 0.1, 0.04, 0.08, 8),
-    makeCloudBank(w * 0.72, h * 0.015, w * 0.48, h * 0.08, -0.16, 0.18, 6),
-  ];
-}
-
-function makeCloudBank(x, y, width, height, tilt, speed, count) {
-  return {
-    x,
-    y,
-    width,
-    height,
-    tilt,
-    speed,
-    lobes: Array.from({ length: count }, (_, i) => {
-      const t = count === 1 ? 0.5 : i / (count - 1);
-      return {
-        x: (t - 0.5) * width + rand(-width * 0.07, width * 0.07),
-        y: rand(-height * 0.22, height * 0.26),
-        rx: rand(width * 0.12, width * 0.24),
-        ry: rand(height * 0.28, height * 0.62),
-        alpha: rand(0.35, 0.72),
-      };
-    }),
-  };
+  state.clouds = [];
 }
 
 function createTextures() {
@@ -216,11 +226,13 @@ function boatInBeam(boat) {
 }
 
 function getRocks(w, h) {
+  const cx = w / 2, cy = h / 2;
+  const d = Math.min(w, h) * 0.26;
   return [
-    { x: w * 0.1, y: h * 0.77, rw: 34, rh: 18 },
-    { x: w * 0.9, y: h * 0.73, rw: 42, rh: 22 },
-    { x: w * 0.18, y: h * 0.88, rw: 58, rh: 28 },
-    { x: w * 0.82, y: h * 0.9, rw: 64, rh: 30 },
+    { x: cx - d * 0.95, y: cy - d * 0.55, rw: 22, rh: 14 },
+    { x: cx + d * 0.90, y: cy - d * 0.70, rw: 26, rh: 16 },
+    { x: cx - d * 0.60, y: cy + d * 1.00, rw: 24, rh: 15 },
+    { x: cx + d * 0.75, y: cy + d * 0.85, rw: 28, rh: 17 },
   ];
 }
 
@@ -265,11 +277,8 @@ function boatHitsRock(boat) {
 
 function coastY(x, w, h) {
   const nx = x / w;
-  const headland = Math.exp(-((nx - 0.5) ** 2) / 0.035);
-  const leftShelf = Math.exp(-((nx - 0.18) ** 2) / 0.018);
-  const rightShelf = Math.exp(-((nx - 0.84) ** 2) / 0.022);
-  const roughness = Math.sin(nx * Math.PI * 5.4) * 0.018 + Math.sin(nx * Math.PI * 12.2) * 0.007;
-  return h * (0.92 - headland * 0.135 - leftShelf * 0.038 - rightShelf * 0.032 + roughness);
+  const roughness = Math.sin(nx * Math.PI * 5.4) * 4 + Math.sin(nx * Math.PI * 12.2) * 2;
+  return h * 0.76 + roughness;
 }
 
 function getCoastPoints(w, h) {
@@ -280,42 +289,94 @@ function getCoastPoints(w, h) {
   return points;
 }
 
-function boatHitsCoast(boat) {
-  if (Math.hypot(boat.x - harbor.x, boat.y - harbor.y) < harbor.r * 2.2) return false;
+function boatHitsIsland(boat) {
+  return Math.hypot(boat.x - lighthouse.x, boat.y - lighthouse.y) < ISLAND_R + boat.size * 0.7;
+}
 
-  const angle = Math.atan2(boat.vy, boat.vx);
-  const samples = [
-    { x: boat.x, y: boat.y },
-    { x: boat.x + Math.cos(angle) * boat.size * 1.1, y: boat.y + Math.sin(angle) * boat.size * 1.1 },
-    { x: boat.x - Math.cos(angle) * boat.size * 0.8, y: boat.y - Math.sin(angle) * boat.size * 0.8 },
-  ];
+function monsterInBeam(m) {
+  const lamp = lampPoint();
+  const dx = m.x - lamp.x;
+  const dy = m.y - lamp.y;
+  const dist = Math.hypot(dx, dy);
+  const reach = state.beamReach + state.pulse * 110;
+  const width = state.beamWidth + state.pulse * 0.35;
+  return dist < reach && Math.abs(angleDelta(Math.atan2(dy, dx), state.beamAngle)) < width;
+}
 
-  return samples.some((sample) => sample.y > coastY(sample.x, canvas.clientWidth, canvas.clientHeight) - boat.size * 0.15);
+// Returns a "rock avoidance" steering offset for guided boats
+function rockAvoidance(boat) {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  let ax = 0, ay = 0;
+  for (const rock of getRocks(w, h)) {
+    const dx = boat.x - rock.x;
+    const dy = boat.y - rock.y;
+    const dist = Math.hypot(dx, dy);
+    const danger = rock.rw * 1.8;
+    if (dist < danger && dist > 0) {
+      const strength = (1 - dist / danger) * 0.9;
+      ax += (dx / dist) * strength;
+      ay += (dy / dist) * strength;
+    }
+  }
+  return { ax, ay };
 }
 
 function update(dt) {
   state.time += dt;
-  updateAtmosphere(dt);
   updateFeedback(dt);
 
   if (!state.running) return;
 
-  state.beamAngle = clampBeamAngle(state.beamAngle + state.turnInput * dt * 2.45);
+  state.beamAngle = clampBeamAngle(state.beamAngle + state.turnInput * dt * state.beamSpeed);
   state.pulse = Math.max(0, state.pulse - dt * 1.9);
   state.charge = Math.min(100, state.charge + dt * 5.5);
+  state.upgradeFlash = Math.max(0, state.upgradeFlash - dt);
 
-  const stormLevel = Math.min(4, Math.floor((state.score + state.misses) / 4));
-  state.spawnEvery = Math.max(920, 2500 - stormLevel * 330);
+  // Weather evolution: gets worse every 25–40 s
+  state.weatherTimer += dt;
+  const weatherInterval = 38 - state.weatherLevel * 5;
+  if (state.weatherTimer > weatherInterval && state.weatherLevel < 4) {
+    state.weatherLevel = Math.min(4, state.weatherLevel + 1);
+    state.weatherTimer = 0;
+    statusEl.textContent = ["", "Mist rolling in. Keep the light steady.", "Rain! Boats lose their way faster.", "Gale force winds — boats panic without light.", "Wild storm! Every second in the dark is dangerous."][state.weatherLevel];
+  }
+
+  // Lighthouse upgrades at score milestones
+  for (const up of UPGRADES) {
+    if (state.score >= up.score && state.upgradeLevel === UPGRADES.indexOf(up)) {
+      state.upgradeLevel += 1;
+      if (up.type === "speed") state.beamSpeed *= 1.3;
+      if (up.type === "reach") state.beamReach = Math.round(state.beamReach * 1.4);
+      if (up.type === "width") state.beamWidth *= 1.22;
+      state.upgradeFlash = 1.8;
+      state.upgradeText = up.label;
+      burst(lighthouse.x, lighthouse.y, "#ffd36a", 40);
+      statusEl.textContent = `✦ ${up.label}`;
+    }
+  }
+
+  // Spawn boats
+  const stormLevel = state.weatherLevel;
+  state.spawnEvery = Math.max(1100, 3200 - stormLevel * 350 - state.score * 18);
   if (state.time - state.lastSpawn > state.spawnEvery / 1000) {
     spawnBoat();
     state.lastSpawn = state.time;
   }
 
+  // Spawn sea monsters when stormy
+  if (stormLevel >= 2 && Math.random() < dt * 0.04 * (stormLevel - 1) && state.monsters.length < stormLevel) {
+    spawnMonster();
+  }
+
+  // Guidance decay rate scales with weather
+  const guidanceLoss = 0.55 + stormLevel * 0.18;
+
   for (const boat of state.boats) {
     const lit = boatInBeam(boat);
-    boat.lit = Math.max(0, Math.min(1, boat.lit + (lit ? dt * 1.8 : -dt * 1.25)));
-    boat.guidance = Math.max(0, Math.min(1, boat.guidance + (lit ? dt * 1.15 : -dt * 0.72)));
-    boat.panic = Math.max(0, Math.min(1, boat.panic + (lit ? -dt * 1.3 : dt * 0.28)));
+    boat.lit = Math.max(0, Math.min(1, boat.lit + (lit ? dt * 1.8 : -dt * 1.4)));
+    boat.guidance = Math.max(0, Math.min(1, boat.guidance + (lit ? dt * 1.1 : -dt * guidanceLoss)));
+    boat.panic = Math.max(0, Math.min(1, boat.panic + (lit ? -dt * 1.4 : dt * (0.22 + stormLevel * 0.08))));
     boat.alert = Math.max(0, boat.alert - dt);
     if (boat.panic > 0.74 && boat.alert === 0) {
       boat.alert = 1.1;
@@ -325,10 +386,25 @@ function update(dt) {
     const targetAngle = angleTo(boat, harbor);
     const currentAngle = Math.atan2(boat.vy, boat.vx);
     const steerPower = boat.guidance * boat.guidance;
-    const stormPull = Math.PI / 2 + Math.sin(state.time * 0.8 + boat.bob) * 0.34;
+
+    // Storm drift: random wandering direction, stronger in worse weather
+    const wanderAng = boat.bob + state.time * (0.4 + stormLevel * 0.15);
+    const stormPull = Math.atan2(Math.sin(wanderAng), Math.cos(wanderAng));
     const aimAngle = steerPower > 0.04 ? targetAngle : stormPull;
+
+    // Rock avoidance when lit (guided)
+    let avoidSteer = 0;
+    if (steerPower > 0.1) {
+      const { ax, ay } = rockAvoidance(boat);
+      const avoidAngle = Math.atan2(ay, ax);
+      const avoidStrength = Math.hypot(ax, ay);
+      if (avoidStrength > 0.05) {
+        avoidSteer = angleDelta(avoidAngle, currentAngle) * avoidStrength * 0.28 * steerPower;
+      }
+    }
+
     const steer = angleDelta(aimAngle, currentAngle) * (0.012 + steerPower * 0.12);
-    const nextAngle = currentAngle + steer + boat.drift * dt * (1.2 + boat.panic);
+    const nextAngle = currentAngle + steer + avoidSteer + boat.drift * dt * (1.2 + boat.panic + stormLevel * 0.2);
     const speed = boat.speed * (0.56 + steerPower * 0.95 + boat.panic * 0.1);
     boat.vx = Math.cos(nextAngle) * speed;
     boat.vy = Math.sin(nextAngle) * speed;
@@ -342,37 +418,83 @@ function update(dt) {
     for (const wake of boat.wake) wake.life -= dt * 0.95;
   }
 
+  // Resolve boats
   for (let i = state.boats.length - 1; i >= 0; i--) {
     const boat = state.boats[i];
-    const arrived = Math.hypot(boat.x - harbor.x, boat.y - harbor.y) < harbor.r && boat.guidance > 0.38;
+    const distToIsland = Math.hypot(boat.x - harbor.x, boat.y - harbor.y);
+    const arrived = distToIsland < harbor.r && boat.guidance > 0.32;
     const wrecked = boatHitsRock(boat);
-    const beached = boatHitsCoast(boat);
-    const lost = wrecked || beached || boat.y > canvas.clientHeight + 40 || boat.x < -70 || boat.x > canvas.clientWidth + 70;
+    const hitIsland = boatHitsIsland(boat);
+    const w = canvas.clientWidth; const h = canvas.clientHeight;
+    const offscreen = boat.y > h + 50 || boat.y < -50 || boat.x < -80 || boat.x > w + 80;
+    // Monster attack
+    const eaten = state.monsters.some(m => !monsterInBeam(m) && Math.hypot(boat.x - m.x, boat.y - m.y) < m.size * 2.5 + boat.size);
+    const lost = wrecked || hitIsland || offscreen || eaten;
+
     if (arrived) {
-      state.score += 1;
+      const pts = boat.value ?? 1;
+      state.score += pts;
       state.streak += 1;
       state.bestStreak = Math.max(state.bestStreak, state.streak);
-      state.charge = Math.min(100, state.charge + Math.min(18, 6 + state.streak * 2));
+      state.charge = Math.min(100, state.charge + Math.min(18, 5 + state.streak * 2));
       state.flash = 0.35;
       state.flashColor = "#ffd36a";
-      burst(boat.x, boat.y, "#ffd36a", 22 + Math.min(12, state.streak * 2));
-      addFloater(boat.x, boat.y - 18, state.streak > 1 ? `x${state.streak}` : "+1", "#ffd36a");
+      burst(boat.x, boat.y, "#ffd36a", 18 + pts * 8 + Math.min(10, state.streak * 2));
+      addFloater(boat.x, boat.y - 18, state.streak > 1 ? `×${state.streak}` : `+${pts}`, "#ffd36a");
       state.boats.splice(i, 1);
-      statusEl.textContent = state.streak > 2 ? `Streak ${state.streak}. The dock lights flare brighter.` : "Another lantern answers from the dock.";
+      statusEl.textContent = state.streak > 2 ? `Streak ${state.streak}! Keep that beam steady.` : "Safe harbor. Another boat makes it.";
     } else if (lost) {
       state.misses += 1;
       state.streak = 0;
       state.shake = 0.32;
       state.flash = 0.42;
       state.flashColor = "#ff6a5f";
-      burst(boat.x, Math.min(boat.y, canvas.clientHeight - 24), "#ff6a5f", 26);
-      addFloater(Math.max(28, Math.min(canvas.clientWidth - 28, boat.x)), Math.min(boat.y, canvas.clientHeight - 44), wrecked ? "rocks" : beached ? "shore" : "lost", "#ff6a5f");
+      const bx = Math.max(28, Math.min(w - 28, boat.x));
+      const by = Math.max(28, Math.min(h - 28, boat.y));
+      burst(bx, by, "#ff6a5f", 26);
+      const reason = eaten ? "monster!" : wrecked ? "rocks!" : hitIsland ? "island!" : "lost";
+      addFloater(bx, by - 20, reason, "#ff6a5f");
       state.boats.splice(i, 1);
-      statusEl.textContent = wrecked
-        ? "A boat broke against the rocks. Sweep them clear."
-        : beached
-          ? "A boat ran aground on the coast. Guide them into the cove."
-          : "A boat slipped past the rocks. Hold the beam steady.";
+      statusEl.textContent = eaten ? "A sea monster took a boat. Light the dark!" : wrecked ? "A boat hit the rocks. Watch the shadows." : hitIsland ? "A boat ran aground. Guide them wide." : "A boat vanished into the storm.";
+    }
+  }
+
+  // Update monsters
+  for (let i = state.monsters.length - 1; i >= 0; i--) {
+    const m = state.monsters[i];
+    m.lit = monsterInBeam(m) ? Math.min(1, m.lit + dt * 2.5) : Math.max(0, m.lit - dt * 1.2);
+    m.visible = Math.min(1, m.visible + dt * 0.8);
+    m.size = m.size ?? 14;
+
+    if (m.lit > 0.4) {
+      // Flee from beam
+      const lamp = lampPoint();
+      const dx = m.x - lamp.x; const dy = m.y - lamp.y;
+      const dist = Math.hypot(dx, dy);
+      m.vx += (dx / dist) * dt * 60;
+      m.vy += (dy / dist) * dt * 60;
+    } else {
+      // Hunt nearest unlit boat
+      let target = null; let bestDist = Infinity;
+      for (const boat of state.boats) {
+        if (boatInBeam(boat)) continue;
+        const d = Math.hypot(boat.x - m.x, boat.y - m.y);
+        if (d < bestDist) { bestDist = d; target = boat; }
+      }
+      if (target) {
+        const dx = target.x - m.x; const dy = target.y - m.y;
+        const dist = Math.hypot(dx, dy);
+        m.vx += (dx / dist) * dt * 28;
+        m.vy += (dy / dist) * dt * 28;
+      }
+    }
+    m.vx *= 0.92; m.vy *= 0.92;
+    m.x += m.vx * dt; m.y += m.vy * dt;
+
+    const w = canvas.clientWidth; const h = canvas.clientHeight;
+    if (m.lit > 0.85 || m.x < -80 || m.x > w + 80 || m.y < -80 || m.y > h + 80) {
+      if (m.lit > 0.85) burst(m.x, m.y, "#5588ff", 14);
+      state.monsters.splice(i, 1);
     }
   }
 
@@ -391,24 +513,6 @@ function update(dt) {
 }
 
 function updateAtmosphere(dt) {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  for (const drop of state.rain) {
-    drop.x -= dt * drop.speed * 0.24;
-    drop.y += dt * drop.speed;
-    if (drop.y > h + drop.length) {
-      drop.y = -drop.length;
-      drop.x = rand(0, w + 80);
-    }
-    if (drop.x < -40) drop.x = w + 40;
-  }
-  for (const streak of state.foam) {
-    streak.x += dt * streak.speed;
-    if (streak.x > w + streak.width) {
-      streak.x = -streak.width;
-      streak.y = rand(h * 0.5, h * 0.98);
-    }
-  }
 }
 
 function updateFeedback(dt) {
@@ -436,346 +540,66 @@ function burst(x, y, color, count = 18) {
 }
 
 function drawSea(w, h) {
-  const horizon = h * 0.18;
-  const gradient = ctx.createLinearGradient(0, 0, 0, h);
-  gradient.addColorStop(0, "#173b44");
-  gradient.addColorStop(0.18, "#113843");
-  gradient.addColorStop(0.46, "#072b38");
-  gradient.addColorStop(0.78, "#041c27");
-  gradient.addColorStop(1, "#020e13");
-  ctx.fillStyle = gradient;
+  // Full-screen sea
+  const seaGrad = ctx.createLinearGradient(0, 0, 0, h);
+  seaGrad.addColorStop(0, LA.seaDeep);
+  seaGrad.addColorStop(0.5, LA.seaMid);
+  seaGrad.addColorStop(1, LA.seaDeep);
+  ctx.fillStyle = seaGrad;
   ctx.fillRect(0, 0, w, h);
 
-  drawClouds(w, h);
-
-  const moon = ctx.createRadialGradient(w * 0.76, h * 0.12, 3, w * 0.76, h * 0.12, 110);
-  moon.addColorStop(0, "rgba(232, 255, 247, 0.28)");
-  moon.addColorStop(0.2, "rgba(210, 245, 238, 0.18)");
-  moon.addColorStop(1, "rgba(210, 245, 238, 0)");
-  ctx.fillStyle = moon;
-  ctx.fillRect(0, 0, w, h * 0.48);
-
-  drawDistantShore(w, h, horizon);
-  drawPerspectiveWater(w, h, horizon);
-  drawWaterTexture(w, h, horizon);
+  drawWaterWaves(w, h);
+  drawWaterShimmer(w, h);
+  drawRockWash(w, h);
 
   if (texture.grain) {
     ctx.save();
-    ctx.globalAlpha = 0.2;
+    ctx.globalAlpha = 0.07;
     ctx.globalCompositeOperation = "overlay";
     ctx.fillStyle = texture.grain;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
-
-  drawFoam(w, h);
-  drawRockWash(w, h);
-  drawRain(w, h);
-  drawRocks(w, h);
 }
 
-function drawClouds(w, h) {
-  ctx.save();
-  drawSkyHaze(w, h);
-  for (const cloud of state.clouds) drawCloudBank(cloud, w, h);
-  ctx.restore();
-}
-
-function drawSkyHaze(w, h) {
-  const mist = ctx.createLinearGradient(0, 0, 0, h * 0.36);
-  mist.addColorStop(0, "rgba(195, 226, 222, 0.08)");
-  mist.addColorStop(0.5, "rgba(61, 105, 111, 0.07)");
-  mist.addColorStop(1, "rgba(2, 12, 17, 0)");
-  ctx.fillStyle = mist;
-  ctx.fillRect(0, 0, w, h * 0.36);
-
-  ctx.save();
-  ctx.globalAlpha = 0.22;
-  ctx.strokeStyle = "rgba(198, 231, 228, 0.12)";
-  ctx.lineWidth = 1;
-  for (let y = h * 0.12; y < h * 0.34; y += 22) {
-    ctx.beginPath();
-    for (let x = -20; x <= w + 20; x += 36) {
-      const drift = Math.sin(x * 0.016 + y * 0.05 + state.time * 0.18) * 6;
-      if (x === -20) ctx.moveTo(x, y + drift);
-      else ctx.lineTo(x, y + drift);
-    }
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawCloudBank(cloud, w, h) {
-  const wrappedX = ((cloud.x + state.time * cloud.speed * 10 + cloud.width * 0.75) % (w + cloud.width * 1.5)) - cloud.width * 0.75;
-  const moonX = w * 0.76;
-  const moonY = h * 0.12;
-
-  ctx.save();
-  ctx.translate(wrappedX, cloud.y);
-  ctx.rotate(cloud.tilt);
-
-  const body = ctx.createLinearGradient(0, -cloud.height, 0, cloud.height * 1.2);
-  body.addColorStop(0, "rgba(88, 125, 128, 0.32)");
-  body.addColorStop(0.38, "rgba(24, 52, 58, 0.5)");
-  body.addColorStop(1, "rgba(2, 12, 17, 0.74)");
-
-  ctx.filter = "blur(10px)";
-  for (const lobe of cloud.lobes) {
-    ctx.globalAlpha = lobe.alpha;
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.ellipse(lobe.x, lobe.y, lobe.rx, lobe.ry, lobe.x * 0.001, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.filter = "none";
-
-  ctx.globalAlpha = 0.42;
-  ctx.fillStyle = "rgba(1, 9, 13, 0.72)";
-  ctx.beginPath();
-  ctx.ellipse(0, cloud.height * 0.36, cloud.width * 0.54, cloud.height * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.globalAlpha = 0.18;
-  ctx.globalCompositeOperation = "lighter";
-  const dx = moonX - wrappedX;
-  const dy = moonY - cloud.y;
-  for (const lobe of cloud.lobes) {
-    if (lobe.x < dx + cloud.width * 0.2 && lobe.y < dy + cloud.height * 0.8) {
-      ctx.fillStyle = "rgba(221, 247, 241, 0.5)";
-      ctx.beginPath();
-      ctx.ellipse(lobe.x - lobe.rx * 0.12, lobe.y - lobe.ry * 0.34, lobe.rx * 0.72, lobe.ry * 0.2, -0.08, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  ctx.restore();
-}
-
-function drawDistantShore(w, h, horizon) {
-  ctx.save();
-  ctx.fillStyle = "rgba(4, 20, 25, 0.6)";
-  ctx.beginPath();
-  ctx.moveTo(0, horizon + 38);
-  for (let x = 0; x <= w + 48; x += 48) {
-    const ridge = Math.sin(x * 0.028 + state.time * 0.04) * 8 + Math.cos(x * 0.017) * 12;
-    ctx.lineTo(x, horizon + 28 + ridge);
-  }
-  ctx.lineTo(w, horizon + 92);
-  ctx.lineTo(0, horizon + 92);
-  ctx.closePath();
-  ctx.fill();
-
-  const haze = ctx.createLinearGradient(0, horizon - 16, 0, horizon + 120);
-  haze.addColorStop(0, "rgba(180, 230, 225, 0.12)");
-  haze.addColorStop(1, "rgba(180, 230, 225, 0)");
-  ctx.fillStyle = haze;
-  ctx.fillRect(0, horizon - 16, w, 140);
-  ctx.restore();
-}
-
-function drawPerspectiveWater(w, h, horizon) {
+function drawWaterWaves(w, h) {
   ctx.save();
   ctx.lineCap = "round";
-
-  for (let y = horizon + 28; y < h + 30; y += Math.max(24, (y - horizon) * 0.16)) {
-    const depth = (y - horizon) / (h - horizon);
-    const band = ctx.createLinearGradient(0, y - 24, 0, y + 34);
-    band.addColorStop(0, `rgba(215, 246, 239, ${0.018 + depth * 0.025})`);
-    band.addColorStop(0.55, `rgba(47, 105, 112, ${0.04 + depth * 0.09})`);
-    band.addColorStop(1, "rgba(0, 0, 0, 0)");
-    ctx.fillStyle = band;
-    ctx.beginPath();
-    for (let x = -40; x <= w + 40; x += 14 + depth * 18) {
-      const sy = swellY(x, y, depth);
-      if (x === -40) ctx.moveTo(x, sy);
-      else ctx.lineTo(x, sy);
-    }
-    ctx.lineTo(w + 40, y + 38 + depth * 22);
-    ctx.lineTo(-40, y + 38 + depth * 22);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.globalAlpha = 0.16 + depth * 0.24;
-    ctx.strokeStyle = "#c7efe8";
-    ctx.lineWidth = 0.7 + depth * 1.1;
-    ctx.beginPath();
-    for (let x = -40; x <= w + 40; x += 14 + depth * 18) {
-      const sy = swellY(x, y, depth);
-      if (x === -40) ctx.moveTo(x, sy);
-      else ctx.lineTo(x, sy);
-    }
-    ctx.stroke();
-  }
-
-  drawWindChop(w, h, horizon);
-  drawMoonGlints(w, h, horizon);
-  ctx.restore();
-}
-
-function drawWaterTexture(w, h, horizon) {
-  drawDeepTroughs(w, h, horizon);
-  drawMicroRipples(w, h, horizon);
-  drawRainDimples(w, h, horizon);
-  drawShoreTurbulence(w, h);
-}
-
-function swellY(x, y, depth) {
-  let offset = 0;
-  for (const swell of state.swells) {
-    const frequency = (Math.PI * 2) / swell.length;
-    offset += Math.sin(x * frequency + y * 0.015 * swell.slope + state.time * swell.speed + swell.phase) * swell.amp * depth;
-  }
-  return y + offset;
-}
-
-function drawDeepTroughs(w, h, horizon) {
-  ctx.save();
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "rgba(1, 12, 18, 0.2)";
-  for (let y = horizon + 58; y < h + 36; y += 38) {
-    const depth = (y - horizon) / (h - horizon);
-    ctx.globalAlpha = 0.12 + depth * 0.16;
-    ctx.lineWidth = 7 + depth * 13;
-    for (let x = -80; x < w + 100; x += 170 - depth * 72) {
-      const length = 58 + depth * 118;
-      const phase = state.time * (0.22 + depth * 0.18) + x * 0.012;
-      const sy = swellY(x, y + Math.sin(phase) * 6, depth);
+  const waveLen = 26;
+  const waveGap = 16;
+  const period = waveLen + waveGap;
+  const rows = Math.ceil(h / 22);
+  for (let row = 0; row < rows; row++) {
+    const y = 12 + row * 22;
+    const scroll = state.time * 20 + row * 7;
+    const bright = 0.5 + 0.5 * Math.sin(state.time * 1.0 + row * 0.3);
+    ctx.lineWidth = 1.3 + bright * 0.5;
+    ctx.globalAlpha = 0.12 + bright * 0.09;
+    ctx.strokeStyle = LA.seaFoam;
+    for (let xBase = -(period); xBase < w + period; xBase += period) {
+      const x = xBase - (scroll % period);
+      if (x + waveLen < 0 || x > w) continue;
       ctx.beginPath();
-      ctx.moveTo(x, sy);
-      ctx.bezierCurveTo(x + length * 0.28, sy + depth * 8, x + length * 0.7, sy - depth * 7, x + length, sy + depth * 2);
+      ctx.moveTo(x, y);
+      ctx.quadraticCurveTo(x + waveLen * 0.4, y - 5, x + waveLen, y + 1);
       ctx.stroke();
     }
   }
   ctx.restore();
 }
 
-function drawMicroRipples(w, h, horizon) {
-  ctx.save();
-  ctx.lineCap = "round";
-  for (let y = horizon + 18; y < h; y += 11) {
-    const depth = (y - horizon) / (h - horizon);
-    const step = Math.max(18, 44 - depth * 24);
-    ctx.lineWidth = 0.45 + depth * 0.9;
-    for (let x = -20; x < w + 40; x += step) {
-      const shimmer = Math.sin(x * 0.055 + y * 0.08 + state.time * 2.3);
-      const broken = Math.sin(x * 0.17 + state.time * 4.2) > -0.48;
-      if (!broken) continue;
-      const length = 5 + depth * 24 + shimmer * 4;
-      const sy = swellY(x, y, depth) + Math.sin(x * 0.23 + state.time * 2.9) * depth * 3;
-      ctx.globalAlpha = (0.035 + depth * 0.13) * (0.55 + shimmer * 0.45);
-      ctx.strokeStyle = shimmer > 0.35 ? "#d8fbef" : "rgba(84, 139, 148, 0.74)";
-      ctx.beginPath();
-      ctx.moveTo(x, sy);
-      ctx.quadraticCurveTo(x + length * 0.48, sy - depth * 1.5, x + length, sy + depth * 1.2);
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-}
-
-function drawRainDimples(w, h, horizon) {
-  ctx.save();
-  ctx.strokeStyle = "rgba(216, 251, 239, 0.16)";
-  ctx.lineWidth = 0.7;
-  for (let i = 0; i < 46; i++) {
-    const x = (i * 73 + Math.sin(i * 11.7) * 31 + state.time * 17) % (w + 80) - 40;
-    const baseY = horizon + 34 + ((i * 47) % Math.max(1, h - horizon - 54));
-    const depth = (baseY - horizon) / (h - horizon);
-    const y = swellY(x, baseY, depth);
-    const pulse = (Math.sin(state.time * 5.2 + i * 1.93) + 1) * 0.5;
-    ctx.globalAlpha = (0.025 + depth * 0.08) * pulse;
-    ctx.beginPath();
-    ctx.ellipse(x, y, 2 + depth * 6 + pulse * 3, 0.7 + depth * 1.5, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawShoreTurbulence(w, h) {
-  const coast = getCoastPoints(w, h);
-  ctx.save();
-  ctx.lineCap = "round";
-  for (let layer = 0; layer < 3; layer++) {
-    ctx.globalAlpha = 0.14 - layer * 0.032;
-    ctx.strokeStyle = layer === 0 ? "#d8fbef" : "rgba(161, 222, 216, 0.72)";
-    ctx.lineWidth = 1.5 + layer * 1.4;
-    ctx.setLineDash([10 + layer * 6, 18 + layer * 9]);
-    ctx.lineDashOffset = -state.time * (14 + layer * 7);
-    ctx.beginPath();
-    for (const [index, point] of coast.entries()) {
-      const wash = Math.sin(point.x * 0.035 + state.time * 2.2 + layer) * (3 + layer * 2);
-      const y = point.y - 12 - layer * 10 + wash;
-      if (index === 0) ctx.moveTo(point.x, y);
-      else ctx.lineTo(point.x, y);
-    }
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-  ctx.restore();
-}
-
-function drawWindChop(w, h, horizon) {
-  ctx.save();
-  ctx.strokeStyle = "rgba(226, 250, 244, 0.12)";
-  for (let y = horizon + 22; y < h; y += 15) {
-    const depth = (y - horizon) / (h - horizon);
-    ctx.globalAlpha = 0.08 + depth * 0.2;
-    ctx.lineWidth = 0.6 + depth * 0.7;
-    for (let x = -20; x < w + 20; x += 54 - depth * 22) {
-      const length = 8 + depth * 26 + Math.sin(x * 0.08 + state.time * 2) * 4;
-      const sy = swellY(x, y, depth) + Math.sin(x * 0.21 + state.time * 2.8) * depth * 3;
-      ctx.beginPath();
-      ctx.moveTo(x, sy);
-      ctx.quadraticCurveTo(x + length * 0.5, sy - depth * 2, x + length, sy + depth * 1.4);
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-}
-
-function drawMoonGlints(w, h, horizon) {
+function drawWaterShimmer(w, h) {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
-  const center = w * 0.54 + Math.sin(state.time * 0.18) * w * 0.035;
-  for (let i = 0; i < 28; i++) {
-    const depth = i / 27;
-    const y = horizon + 28 + depth * (h - horizon) * 0.78;
-    const width = (18 + depth * 92) * (0.56 + Math.sin(i * 2.8) * 0.12);
-    const x = center + Math.sin(i * 1.7 + state.time * 0.8) * (12 + depth * 48);
-    ctx.globalAlpha = (0.035 + depth * 0.06) * (0.75 + Math.sin(state.time * 2.1 + i) * 0.25);
-    ctx.strokeStyle = "#ffe8a5";
-    ctx.lineWidth = 0.7 + depth * 1.1;
+  for (let i = 0; i < 14; i++) {
+    const t = (state.time * 0.38 + i * 0.29) % 1;
+    const x = (i * 137 + 42) % w;
+    const y = (i * 89 + 18) % h;
+    ctx.globalAlpha = (1 - t) * 0.055;
+    ctx.fillStyle = LA.seaFoam;
     ctx.beginPath();
-    ctx.moveTo(x - width * 0.5, swellY(x, y, depth));
-    ctx.lineTo(x + width * 0.5, swellY(x + width, y, depth));
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawFoam(w, h) {
-  ctx.save();
-  ctx.lineCap = "round";
-  for (const streak of state.foam) {
-    const horizon = h * 0.18;
-    const depth = Math.max(0, (streak.y - horizon) / (h - horizon));
-    const y = swellY(streak.x, streak.y, depth) + Math.sin(state.time * 1.7 + streak.phase) * depth * 5;
-    ctx.globalAlpha = streak.alpha * Math.max(0.18, depth);
-    ctx.strokeStyle = "#d8fbef";
-    ctx.lineWidth = streak.thickness + depth * 1.6;
-    ctx.beginPath();
-    ctx.moveTo(streak.x, y);
-    ctx.quadraticCurveTo(streak.x + streak.width * 0.5, y + streak.bend + Math.sin(state.time + streak.phase) * 4, streak.x + streak.width, y + depth * 1.6);
-    ctx.stroke();
-
-    if (depth > 0.46 && streak.width > 30) {
-      ctx.globalAlpha *= 0.42;
-      ctx.lineWidth = Math.max(0.5, streak.thickness * 0.55);
-      ctx.beginPath();
-      ctx.moveTo(streak.x + streak.width * 0.12, y + 5 + depth * 2);
-      ctx.quadraticCurveTo(streak.x + streak.width * 0.48, y + 2 + streak.bend * 0.45, streak.x + streak.width * 0.84, y + 5 + depth * 3);
-      ctx.stroke();
-    }
+    ctx.ellipse(x, y, 16 + t * 22, 5 + t * 7, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -783,148 +607,18 @@ function drawFoam(w, h) {
 function drawRockWash(w, h) {
   ctx.save();
   ctx.lineCap = "round";
-  ctx.strokeStyle = "rgba(216, 251, 239, 0.23)";
+  ctx.strokeStyle = LA.seaFoam;
   for (const rock of getRocks(w, h)) {
     const { x, y, rw, rh } = rock;
-    const pulse = Math.sin(state.time * 2.6 + x * 0.04) * 0.5 + 0.5;
-    ctx.globalAlpha = 0.2 + pulse * 0.18;
-    ctx.lineWidth = 1.2 + pulse * 1.2;
+    const pulse = Math.sin(state.time * 2.4 + x * 0.05) * 0.5 + 0.5;
+    ctx.globalAlpha = 0.28 + pulse * 0.18;
+    ctx.lineWidth = 1.5 + pulse * 1.2;
     ctx.beginPath();
-    ctx.ellipse(x, y + rh * 0.62, rw * (1.15 + pulse * 0.12), rh * (0.3 + pulse * 0.08), 0, 0, Math.PI * 2);
+    ctx.ellipse(x, y, rw * (1.5 + pulse * 0.18), rh * (1.5 + pulse * 0.18), 0, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.globalAlpha = 0.08 + pulse * 0.12;
+    ctx.globalAlpha = 0.12 + pulse * 0.10;
     ctx.beginPath();
-    ctx.ellipse(x - rw * 0.1, y + rh * 0.86, rw * (1.6 + pulse * 0.18), rh * 0.22, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawCoastline(w, h) {
-  const coast = getCoastPoints(w, h);
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(coast[0].x, coast[0].y);
-  for (const point of coast.slice(1)) ctx.lineTo(point.x, point.y);
-  ctx.lineTo(w + 24, h + 24);
-  ctx.lineTo(-24, h + 24);
-  ctx.closePath();
-
-  const land = ctx.createLinearGradient(0, h * 0.68, 0, h);
-  land.addColorStop(0, "#53605a");
-  land.addColorStop(0.34, "#2f4544");
-  land.addColorStop(0.7, "#172a2b");
-  land.addColorStop(1, "#0c1719");
-  ctx.fillStyle = land;
-  ctx.fill();
-
-  if (texture.stipple) {
-    ctx.globalAlpha = 0.35;
-    ctx.globalCompositeOperation = "overlay";
-    ctx.fillStyle = texture.stipple;
-    ctx.fill();
-    ctx.globalCompositeOperation = "source-over";
-    ctx.globalAlpha = 1;
-  }
-
-  ctx.strokeStyle = "rgba(225, 249, 242, 0.22)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(coast[0].x, coast[0].y);
-  for (const point of coast.slice(1)) ctx.lineTo(point.x, point.y);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(216, 251, 239, 0.2)";
-  ctx.lineWidth = 1.4;
-  ctx.setLineDash([16, 18]);
-  ctx.beginPath();
-  ctx.moveTo(coast[0].x, coast[0].y + 8);
-  for (const point of coast.slice(1)) {
-    const wash = Math.sin(point.x * 0.04 + state.time * 2.2) * 3;
-    ctx.lineTo(point.x, point.y + 8 + wash);
-  }
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  drawCove(w, h);
-  drawHeadlandStones(w, h);
-  ctx.restore();
-}
-
-function drawCove(w, h) {
-  const shoreY = coastY(harbor.x, w, h);
-  const basinY = (harbor.y + shoreY) * 0.5;
-  const water = ctx.createRadialGradient(harbor.x, harbor.y, 8, harbor.x, basinY, 118);
-  water.addColorStop(0, "rgba(10, 47, 59, 0.78)");
-  water.addColorStop(0.48, "rgba(6, 31, 39, 0.66)");
-  water.addColorStop(1, "rgba(6, 31, 39, 0)");
-  ctx.fillStyle = water;
-  ctx.beginPath();
-  ctx.ellipse(harbor.x, basinY, 86, Math.max(46, (shoreY - harbor.y) * 0.6), 0, 0, Math.PI * 2);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(216, 251, 239, 0.2)";
-  ctx.lineWidth = 1.4;
-  ctx.beginPath();
-  ctx.ellipse(harbor.x, harbor.y + 8, 62, 26, 0, Math.PI * 0.08, Math.PI * 0.92);
-  ctx.stroke();
-
-  drawBreakwater(harbor.x - 54, harbor.y + 12, harbor.x - 34, shoreY + 10, -1);
-  drawBreakwater(harbor.x + 54, harbor.y + 12, harbor.x + 34, shoreY + 10, 1);
-}
-
-function drawBreakwater(x1, y1, x2, y2, side) {
-  ctx.save();
-  ctx.strokeStyle = "rgba(16, 27, 29, 0.9)";
-  ctx.lineWidth = 9;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.quadraticCurveTo((x1 + x2) * 0.5 + side * 14, (y1 + y2) * 0.5, x2, y2);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(114, 126, 119, 0.72)";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1 - 2);
-  ctx.quadraticCurveTo((x1 + x2) * 0.5 + side * 14, (y1 + y2) * 0.5 - 2, x2, y2 - 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawHeadlandStones(w, h) {
-  const startY = lighthouse.y + 58;
-  const endY = h + 18;
-  const rows = 8;
-  ctx.save();
-  for (let i = 0; i < rows; i++) {
-    const t = i / (rows - 1);
-    const y = startY + (endY - startY) * t;
-    const half = 12 + t * 18;
-    const wobble = Math.sin(i * 1.7) * 3;
-    const stone = ctx.createLinearGradient(lighthouse.x, y - 5, lighthouse.x, y + 9);
-    stone.addColorStop(0, "rgba(93, 101, 96, 0.48)");
-    stone.addColorStop(1, "rgba(24, 38, 40, 0.82)");
-    ctx.fillStyle = stone;
-    ctx.beginPath();
-    ctx.roundRect(lighthouse.x - half + wobble, y, half * 2, 8 + t * 3, 3);
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-
-function drawRain() {
-  ctx.save();
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-  ctx.lineWidth = 1;
-  for (const drop of state.rain) {
-    ctx.globalAlpha = drop.alpha;
-    ctx.beginPath();
-    ctx.moveTo(drop.x, drop.y);
-    ctx.lineTo(drop.x - drop.length * 0.38, drop.y + drop.length);
+    ctx.ellipse(x, y, rw * (2.1 + pulse * 0.22), rh * (2.1 + pulse * 0.22), 0, 0, Math.PI * 2);
     ctx.stroke();
   }
   ctx.restore();
@@ -934,31 +628,141 @@ function drawRocks(w, h) {
   ctx.save();
   for (const rock of getRocks(w, h)) {
     const { x, y, rw, rh } = rock;
-    const grad = ctx.createLinearGradient(x, y - rh, x, y + rh);
-    grad.addColorStop(0, "#6c7a78");
-    grad.addColorStop(0.42, "#33484d");
-    grad.addColorStop(1, "#13252b");
-    ctx.fillStyle = grad;
+    const pts = rockPoints(rock);
+    const n = pts.length;
+    ctx.save();
+    ctx.translate(4, 5);
+    ctx.fillStyle = "rgba(0, 10, 30, 0.28)";
     ctx.beginPath();
-    for (const [index, point] of rockPoints(rock).entries()) {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < n; i++) {
+      const nx = (pts[i].x + pts[(i + 1) % n].x) / 2;
+      const ny = (pts[i].y + pts[(i + 1) % n].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, nx, ny);
     }
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = LA.rock;
     ctx.beginPath();
-    ctx.moveTo(x - rw * 0.45, y - rh * 0.5);
-    ctx.lineTo(x + rw * 0.12, y - rh);
-    ctx.lineTo(x - rw * 0.05, y + rh * 0.2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = "rgba(223, 247, 242, 0.12)";
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(216, 251, 239, 0.1)";
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < n; i++) {
+      const nx = (pts[i].x + pts[(i + 1) % n].x) / 2;
+      const ny = (pts[i].y + pts[(i + 1) % n].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, nx, ny);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = LA.rockLight;
     ctx.beginPath();
-    ctx.ellipse(x, y + rh * 0.65, rw * 1.15, rh * 0.32, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.ellipse(x - rw * 0.22, y - rh * 0.22, rw * 0.38, rh * 0.38, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = LA.rockDark; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < n; i++) {
+      const nx = (pts[i].x + pts[(i + 1) % n].x) / 2;
+      const ny = (pts[i].y + pts[(i + 1) % n].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, nx, ny);
+    }
+    ctx.closePath(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawMonsters() {
+  ctx.save();
+  for (const m of state.monsters) {
+    if (m.visible < 0.05) continue;
+    const inBeam = monsterInBeam(m);
+    ctx.globalAlpha = m.visible * (inBeam ? 0.7 : 0.55);
+    const t = state.time * 1.2 + m.phase;
+    const tentacleColor = inBeam ? "rgba(80, 30, 120, 0.9)" : "rgba(10, 10, 40, 0.85)";
+    m.size = m.size ?? 14;
+
+    // Tentacles
+    ctx.strokeStyle = tentacleColor;
+    ctx.lineCap = "round";
+    for (let i = 0; i < 6; i++) {
+      const baseAngle = (i / 6) * Math.PI * 2 + t * 0.3;
+      const len = m.size * (1.4 + Math.sin(t + i) * 0.4);
+      const curl = Math.sin(t * 1.5 + i * 1.1) * 0.6;
+      ctx.lineWidth = 3 - i * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(m.x, m.y);
+      const mx1 = m.x + Math.cos(baseAngle + curl * 0.5) * len * 0.5;
+      const my1 = m.y + Math.sin(baseAngle + curl * 0.5) * len * 0.5;
+      const ex = m.x + Math.cos(baseAngle + curl) * len;
+      const ey = m.y + Math.sin(baseAngle + curl) * len;
+      ctx.quadraticCurveTo(mx1, my1, ex, ey);
+      ctx.stroke();
+    }
+    // Body
+    ctx.fillStyle = inBeam ? "rgba(100, 40, 160, 0.8)" : "rgba(15, 10, 50, 0.8)";
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.size * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+    // Eyes (glow when in beam)
+    if (inBeam) {
+      ctx.fillStyle = "rgba(200, 100, 255, 0.9)";
+    } else {
+      ctx.fillStyle = "rgba(255, 40, 40, 0.85)";
+    }
+    for (const ex of [-m.size * 0.22, m.size * 0.22]) {
+      ctx.beginPath();
+      ctx.arc(m.x + ex, m.y - m.size * 0.08, m.size * 0.12, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawIsland() {
+  const cx = lighthouse.x;
+  const cy = lighthouse.y;
+  ctx.save();
+
+  // Island shadow
+  ctx.fillStyle = "rgba(0, 10, 40, 0.35)";
+  ctx.beginPath();
+  ctx.ellipse(cx + 5, cy + 6, ISLAND_R + 8, ISLAND_R + 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Island rock/earth base
+  const islandGrad = ctx.createRadialGradient(cx - 6, cy - 6, 4, cx, cy, ISLAND_R + 4);
+  islandGrad.addColorStop(0, "#c8b880");
+  islandGrad.addColorStop(0.4, "#a09060");
+  islandGrad.addColorStop(0.75, "#786840");
+  islandGrad.addColorStop(1, "#504828");
+  ctx.fillStyle = islandGrad;
+  ctx.strokeStyle = LA.outline;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, ISLAND_R + 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Shore ring (sand/surf)
+  ctx.strokeStyle = LA.seaFoam;
+  ctx.lineWidth = 2.5;
+  const surf = Math.sin(state.time * 2.2) * 0.5 + 0.5;
+  ctx.globalAlpha = 0.35 + surf * 0.25;
+  ctx.setLineDash([8, 6]);
+  ctx.lineDashOffset = -state.time * 15;
+  ctx.beginPath();
+  ctx.arc(cx, cy, ISLAND_R + 6, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  // Small grass tufts on island
+  ctx.fillStyle = LA.land;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const r = ISLAND_R * 0.55;
+    const gx = cx + Math.cos(a) * r;
+    const gy = cy + Math.sin(a) * r;
+    ctx.beginPath();
+    ctx.arc(gx, gy, 3.5, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -967,27 +771,19 @@ function drawBeam() {
   const lamp = lampPoint();
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
-  const horizon = h * 0.18 + 18;
   const reach = state.beamReach + state.pulse * 110;
   const width = state.beamWidth + state.pulse * 0.35;
   const left = state.beamAngle - width;
   const right = state.beamAngle + width;
-  const beam = ctx.createRadialGradient(lamp.x, lamp.y, 8, lamp.x, lamp.y, reach);
-  beam.addColorStop(0, `rgba(255, 226, 134, ${0.42 + state.pulse * 0.18})`);
-  beam.addColorStop(0.42, "rgba(255, 218, 112, 0.17)");
-  beam.addColorStop(1, "rgba(255, 218, 112, 0)");
   const dir = { x: Math.cos(state.beamAngle), y: Math.sin(state.beamAngle) };
   const tangent = { x: -dir.y, y: dir.x };
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(0, horizon);
-  ctx.lineTo(w, horizon);
-  const coast = getCoastPoints(w, h);
-  for (const point of coast.slice().reverse()) ctx.lineTo(point.x, point.y - 6);
-  ctx.closePath();
-  ctx.clip();
+  const beam = ctx.createRadialGradient(lamp.x, lamp.y, 6, lamp.x, lamp.y, reach);
+  beam.addColorStop(0, `rgba(255, 230, 140, ${0.54 + state.pulse * 0.18})`);
+  beam.addColorStop(0.38, "rgba(255, 218, 112, 0.20)");
+  beam.addColorStop(1, "rgba(255, 218, 112, 0)");
 
+  ctx.save();
   ctx.beginPath();
   ctx.moveTo(lamp.x, lamp.y);
   ctx.arc(lamp.x, lamp.y, reach, left, right);
@@ -996,43 +792,26 @@ function drawBeam() {
   ctx.globalCompositeOperation = "lighter";
   ctx.fill();
 
-  for (let i = 0; i < 8; i++) {
-    const t = (i + 1) / 9;
-    const dist = reach * t;
-    const cx = lamp.x + dir.x * dist;
-    const cy = lamp.y + dir.y * dist;
-    const radius = dist * Math.tan(width) * (0.68 + t * 0.24);
-    ctx.globalAlpha = (0.1 - t * 0.065 + state.pulse * 0.035) * (0.72 + Math.sin(state.time * 2.3 + i) * 0.28);
-    ctx.fillStyle = "rgba(255, 232, 165, 0.48)";
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(state.beamAngle + Math.PI / 2);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, radius, 2.5 + t * 7, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
   ctx.lineCap = "round";
-  for (let i = 0; i < 18; i++) {
-    const t = (i + 1) / 19;
-    const dist = reach * (0.16 + t * 0.78);
-    const cx = lamp.x + dir.x * dist + Math.sin(state.time * 1.9 + i * 1.7) * 7;
-    const cy = lamp.y + dir.y * dist + Math.sin(state.time * 2.4 + i) * 2.5;
-    if (cy < horizon + 4) continue;
-    const half = dist * Math.tan(width) * (0.18 + t * 0.36);
-    ctx.globalAlpha = 0.08 + (1 - t) * 0.08 + state.pulse * 0.05;
+  for (let i = 0; i < 14; i++) {
+    const t = (i + 1) / 15;
+    const dist = reach * (0.14 + t * 0.78);
+    const cx = lamp.x + dir.x * dist + Math.sin(state.time * 1.8 + i * 1.9) * 5;
+    const cy = lamp.y + dir.y * dist + Math.sin(state.time * 2.3 + i) * 2;
+    const half = dist * Math.tan(width) * (0.2 + t * 0.32);
+    ctx.globalAlpha = 0.09 + (1 - t) * 0.07 + state.pulse * 0.04;
     ctx.strokeStyle = "#ffe8a5";
-    ctx.lineWidth = 0.9 + t * 1.2;
+    ctx.lineWidth = 0.9 + t * 1.1;
     ctx.beginPath();
     ctx.moveTo(cx - tangent.x * half, cy - tangent.y * half);
-    ctx.quadraticCurveTo(cx, cy + Math.sin(state.time * 2 + i) * 4, cx + tangent.x * half, cy + tangent.y * half);
+    ctx.quadraticCurveTo(cx, cy + Math.sin(state.time * 2.1 + i) * 3, cx + tangent.x * half, cy + tangent.y * half);
     ctx.stroke();
   }
 
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = `rgba(255, 238, 168, ${0.18 + state.pulse * 0.14})`;
-  ctx.lineWidth = 1.3;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.strokeStyle = `rgba(255, 238, 168, ${0.22 + state.pulse * 0.12})`;
+  ctx.lineWidth = 1.4;
   for (const edge of [left, right]) {
     ctx.beginPath();
     ctx.moveTo(lamp.x, lamp.y);
@@ -1040,10 +819,11 @@ function drawBeam() {
     ctx.stroke();
   }
 
-  ctx.globalAlpha = 0.32 + state.pulse * 0.16;
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.55 + state.pulse * 0.22;
   ctx.fillStyle = "#ffd36a";
   ctx.beginPath();
-  ctx.arc(lamp.x, lamp.y, 10 + state.pulse * 6, 0, Math.PI * 2);
+  ctx.arc(lamp.x, lamp.y, 16 + state.pulse * 8, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -1052,171 +832,107 @@ function drawBoat(boat) {
   const a = Math.atan2(boat.vy, boat.vx);
   const s = boat.size;
   ctx.save();
+
   if (boat.panic > 0.48) {
     const warning = (boat.panic - 0.48) / 0.52;
-    ctx.globalAlpha = (0.12 + warning * 0.34) * (0.65 + Math.sin(state.time * 8 + boat.bob) * 0.35);
-    ctx.strokeStyle = "#ff6a5f";
-    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = (0.16 + warning * 0.38) * (0.65 + Math.sin(state.time * 8 + boat.bob) * 0.35);
+    ctx.strokeStyle = "#ff3820";
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(boat.x, boat.y, boat.size * (1.9 + warning * 1.5), 0, Math.PI * 2);
+    ctx.arc(boat.x, boat.y, boat.size * (2.1 + warning * 1.6), 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
+
   for (let i = boat.wake.length - 1; i >= 0; i--) {
     const wake = boat.wake[i];
     if (wake.life <= 0) continue;
-    const wakeAngle = wake.a ?? a;
-    const wakeSize = wake.size ?? s;
-    const backX = Math.cos(wakeAngle + Math.PI);
-    const backY = Math.sin(wakeAngle + Math.PI);
-    const sideX = Math.cos(wakeAngle + Math.PI / 2);
-    const sideY = Math.sin(wakeAngle + Math.PI / 2);
-    const spread = wakeSize * (1.2 + i * 0.28);
-    const tail = wakeSize * (2.0 + i * 0.34);
-    ctx.globalAlpha = wake.life * 0.2;
-    ctx.strokeStyle = "#d8fbef";
-    ctx.lineWidth = 1.1 + wake.life * 0.9;
+    const wa = wake.a ?? a;
+    const ws = wake.size ?? s;
+    const backX = Math.cos(wa + Math.PI);
+    const backY = Math.sin(wa + Math.PI);
+    const sideX = Math.cos(wa + Math.PI / 2);
+    const sideY = Math.sin(wa + Math.PI / 2);
+    const spread = ws * (0.9 + i * 0.20);
+    const tail = ws * (1.5 + i * 0.26);
+    ctx.globalAlpha = wake.life * 0.38;
+    ctx.strokeStyle = LA.seaFoam;
+    ctx.lineWidth = 1.1;
     ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(wake.x - sideX * spread * 0.25, wake.y - sideY * spread * 0.25);
-    ctx.quadraticCurveTo(wake.x + backX * tail * 0.45 - sideX * spread, wake.y + backY * tail * 0.45 - sideY * spread, wake.x + backX * tail - sideX * spread * 1.35, wake.y + backY * tail - sideY * spread * 1.35);
-    ctx.moveTo(wake.x + sideX * spread * 0.25, wake.y + sideY * spread * 0.25);
-    ctx.quadraticCurveTo(wake.x + backX * tail * 0.45 + sideX * spread, wake.y + backY * tail * 0.45 + sideY * spread, wake.x + backX * tail + sideX * spread * 1.35, wake.y + backY * tail + sideY * spread * 1.35);
-    ctx.stroke();
-
-    ctx.globalAlpha = wake.life * 0.08;
-    ctx.beginPath();
-    ctx.ellipse(wake.x + backX * tail * 0.55, wake.y + backY * tail * 0.55, wakeSize * (1.2 + i * 0.12), wakeSize * 0.32, wakeAngle, 0, Math.PI * 2);
+    ctx.moveTo(wake.x, wake.y);
+    ctx.lineTo(wake.x + backX * tail - sideX * spread, wake.y + backY * tail - sideY * spread);
+    ctx.moveTo(wake.x, wake.y);
+    ctx.lineTo(wake.x + backX * tail + sideX * spread, wake.y + backY * tail + sideY * spread);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
+
+  ctx.fillStyle = "rgba(0, 20, 60, 0.28)";
   ctx.beginPath();
-  ctx.ellipse(boat.x - boat.vx * 0.08, boat.y + s * 0.9, s * 2.05, s * 0.68, a, 0, Math.PI * 2);
+  ctx.ellipse(boat.x + 3, boat.y + 4, s * 1.85, s * 0.88, a, 0, Math.PI * 2);
   ctx.fill();
+
   ctx.translate(boat.x, boat.y);
   ctx.rotate(a);
-  const bob = Math.sin(state.time * 4.2 + boat.bob) * 1.5;
-  const roll = Math.sin(state.time * 3.2 + boat.bob) * 0.05 + boat.roll * 0.25;
-  ctx.translate(0, bob);
-  ctx.rotate(roll);
 
   const litHull = boat.lit > 0.1;
-  const paintTop = boat.hullHue === "wood" ? (litHull ? "#d4b98e" : "#8f7458") : (litHull ? "#e8f3ee" : "#9fb5b7");
-  const paintMid = boat.hullHue === "wood" ? "#6f5038" : "#5e7f87";
-  const paintDark = boat.hullHue === "wood" ? "#2f2119" : "#1d3a43";
-  const hull = ctx.createLinearGradient(0, -s * 0.9, 0, s * 0.95);
-  hull.addColorStop(0, paintTop);
-  hull.addColorStop(0.48, paintMid);
-  hull.addColorStop(1, paintDark);
+  const hullColor = boat.hullHue === "wood"
+    ? (litHull ? "#d4a860" : "#8c6038")
+    : (litHull ? "#cce0d8" : "#5a8898");
 
-  ctx.fillStyle = hull;
+  ctx.fillStyle = hullColor;
+  ctx.strokeStyle = LA.outline;
+  ctx.lineWidth = 1.8;
   ctx.beginPath();
-  ctx.moveTo(s * 1.75, 0);
-  ctx.bezierCurveTo(s * 0.95, -s * 0.86, -s * 0.45, -s * 0.84, -s * 1.18, -s * 0.48);
-  ctx.lineTo(-s * 1.34, s * 0.44);
-  ctx.bezierCurveTo(-s * 0.42, s * 0.84, s * 0.96, s * 0.76, s * 1.75, 0);
-  ctx.closePath();
+  ctx.ellipse(0, 0, s * 1.75, s * 0.82, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(2, 13, 16, 0.55)";
-  ctx.lineWidth = 1.1;
   ctx.stroke();
 
-  const side = ctx.createLinearGradient(0, 0, 0, s);
-  side.addColorStop(0, "rgba(255, 255, 255, 0.05)");
-  side.addColorStop(1, "rgba(2, 13, 16, 0.32)");
-  ctx.fillStyle = side;
+  ctx.fillStyle = litHull ? "#e8dab0" : "#6a8090";
   ctx.beginPath();
-  ctx.moveTo(s * 1.54, s * 0.08);
-  ctx.bezierCurveTo(s * 0.75, s * 0.53, -s * 0.5, s * 0.62, -s * 1.25, s * 0.38);
-  ctx.lineTo(-s * 1.34, s * 0.44);
-  ctx.bezierCurveTo(-s * 0.42, s * 0.84, s * 0.96, s * 0.76, s * 1.75, 0);
+  ctx.moveTo(s * 1.65, 0);
+  ctx.lineTo(s * 0.85, -s * 0.38);
+  ctx.lineTo(s * 0.85, s * 0.38);
   ctx.closePath();
   ctx.fill();
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
-  ctx.beginPath();
-  ctx.moveTo(s * 1.0, -s * 0.13);
-  ctx.lineTo(-s * 0.66, -s * 0.38);
-  ctx.lineTo(-s * 0.86, -s * 0.1);
-  ctx.lineTo(s * 0.54, s * 0.06);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(235, 250, 247, 0.22)";
-  ctx.lineWidth = 0.7;
-  ctx.beginPath();
-  ctx.moveTo(s * 1.28, -s * 0.06);
-  ctx.quadraticCurveTo(s * 0.32, -s * 0.58, -s * 1.0, -s * 0.38);
-  ctx.moveTo(s * 1.28, s * 0.08);
-  ctx.quadraticCurveTo(s * 0.26, s * 0.54, -s * 1.08, s * 0.34);
+  ctx.strokeStyle = LA.outline; ctx.lineWidth = 1;
   ctx.stroke();
 
   if (boat.canopy) {
-    const cabin = ctx.createLinearGradient(-s * 0.38, -s * 0.4, s * 0.42, s * 0.4);
-    cabin.addColorStop(0, litHull ? "#fff2c2" : "#bed4d3");
-    cabin.addColorStop(0.55, litHull ? "#e6d28f" : "#789da2");
-    cabin.addColorStop(1, "#25444a");
-    ctx.fillStyle = cabin;
+    ctx.fillStyle = litHull ? "rgba(255,222,130,0.82)" : "rgba(90,130,148,0.72)";
     ctx.beginPath();
-    ctx.roundRect(-s * 0.48, -s * 0.32, s * 0.86, s * 0.64, s * 0.16);
+    ctx.roundRect(-s * 0.42, -s * 0.33, s * 0.78, s * 0.66, s * 0.15);
     ctx.fill();
-    ctx.strokeStyle = "rgba(3, 17, 20, 0.48)";
-    ctx.stroke();
-    ctx.fillStyle = litHull ? "rgba(255, 226, 151, 0.68)" : "rgba(160, 225, 222, 0.34)";
-    for (const y of [-0.17, 0.17]) {
+    ctx.strokeStyle = LA.outline; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  // Size indicator bands on hull
+  const v = boat.value ?? 1;
+  if (v > 1) {
+    ctx.strokeStyle = v === 3 ? "#f0cc30" : "#c8e8d0";
+    ctx.lineWidth = 1.5;
+    for (let b = 0; b < v - 1; b++) {
       ctx.beginPath();
-      ctx.roundRect(-s * 0.2, s * y - s * 0.07, s * 0.36, s * 0.14, s * 0.05);
-      ctx.fill();
+      ctx.ellipse(-(b * s * 0.28), 0, s * 0.3, s * 0.78, 0, -Math.PI * 0.5, Math.PI * 0.5);
+      ctx.stroke();
     }
-  } else {
-    ctx.fillStyle = "rgba(28, 52, 58, 0.72)";
-    ctx.beginPath();
-    ctx.roundRect(-s * 0.52, -s * 0.26, s * 0.76, s * 0.52, s * 0.15);
-    ctx.fill();
   }
 
-  if (boat.mast) {
-    ctx.strokeStyle = "rgba(30, 34, 32, 0.68)";
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.08, -s * 0.92);
-    ctx.lineTo(-s * 0.08, s * 0.48);
-    ctx.stroke();
-    ctx.fillStyle = litHull ? "rgba(255, 248, 220, 0.72)" : "rgba(222, 232, 226, 0.52)";
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.04, -s * 0.82);
-    ctx.lineTo(s * 0.72, -s * 0.12);
-    ctx.lineTo(-s * 0.03, s * 0.04);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = "rgba(2, 13, 16, 0.24)";
-    ctx.stroke();
-  }
+  ctx.fillStyle = boat.panic > 0.65 ? "#ff3820" : boat.guidance > 0.25 ? LA.gold : "#708898";
+  ctx.beginPath();
+  ctx.arc(s * 1.38, 0, s * 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = LA.outline; ctx.lineWidth = 0.8; ctx.stroke();
 
-  ctx.fillStyle = boat.panic > 0.65 ? "#ff6a5f" : boat.guidance > 0.25 ? "#ffd36a" : "#6f8487";
-  ctx.beginPath();
-  ctx.arc(s * 1.38, 0, s * 0.18, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.globalAlpha = litHull ? 0.8 : 0.42;
-  ctx.fillStyle = "#ffd36a";
-  ctx.beginPath();
-  ctx.arc(-s * 1.06, -s * 0.26, s * 0.12, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = boat.panic > 0.62 ? "#ff6a5f" : "#81f0d9";
-  ctx.beginPath();
-  ctx.arc(-s * 1.06, s * 0.26, s * 0.12, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
 function drawVignette(w, h) {
   ctx.save();
-  const vignette = ctx.createRadialGradient(w * 0.5, h * 0.45, h * 0.18, w * 0.5, h * 0.5, h * 0.72);
+  const vignette = ctx.createRadialGradient(w * 0.5, h * 0.5, h * 0.18, w * 0.5, h * 0.5, h * 0.78);
   vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
-  vignette.addColorStop(0.72, "rgba(0, 0, 0, 0.18)");
+  vignette.addColorStop(0.65, "rgba(0, 0, 0, 0.10)");
   vignette.addColorStop(1, "rgba(0, 0, 0, 0.52)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, w, h);
@@ -1226,248 +942,90 @@ function drawVignette(w, h) {
 function drawLighthouse() {
   ctx.save();
   ctx.translate(lighthouse.x, lighthouse.y);
-  ctx.shadowColor = "rgba(0, 0, 0, 0.42)";
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 10;
+  const r = lighthouse.r;
 
-  ctx.fillStyle = "rgba(4, 16, 18, 0.56)";
+  ctx.fillStyle = "rgba(0, 10, 30, 0.32)";
   ctx.beginPath();
-  ctx.ellipse(4, 60, 42, 13, -0.03, 0, Math.PI * 2);
+  ctx.ellipse(5, 6, r + 7, r + 5, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
 
-  const towerHalf = (y) => 12 + ((y + 18) / 70) * 8;
-  const drawTowerBand = (y, height, topColor, bottomColor) => {
-    const topHalf = towerHalf(y);
-    const bottomHalf = towerHalf(y + height);
-    const band = ctx.createLinearGradient(-bottomHalf, y, bottomHalf, y);
-    band.addColorStop(0, topColor);
-    band.addColorStop(0.52, bottomColor);
-    band.addColorStop(1, "#6e2d2f");
-    ctx.fillStyle = band;
+  ctx.fillStyle = "#c0b090";
+  ctx.strokeStyle = LA.outline; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === 0 ? LA.red : LA.white;
     ctx.beginPath();
-    ctx.moveTo(-topHalf, y);
-    ctx.lineTo(topHalf, y);
-    ctx.lineTo(bottomHalf, y + height);
-    ctx.lineTo(-bottomHalf, y + height);
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, r, (i / 8) * Math.PI * 2, ((i + 1) / 8) * Math.PI * 2);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = "rgba(73, 32, 34, 0.38)";
-    ctx.lineWidth = 0.9;
-    ctx.beginPath();
-    ctx.ellipse(0, y + height, bottomHalf, 2.7, 0, 0, Math.PI);
-    ctx.stroke();
-  };
-
-  const plinth = ctx.createLinearGradient(-36, 42, 36, 62);
-  plinth.addColorStop(0, "#798079");
-  plinth.addColorStop(0.45, "#4f5d59");
-  plinth.addColorStop(1, "#253739");
-  ctx.fillStyle = plinth;
-  ctx.beginPath();
-  ctx.moveTo(-28, 42);
-  ctx.lineTo(25, 42);
-  ctx.lineTo(34, 56);
-  ctx.lineTo(-35, 58);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "rgba(225, 249, 242, 0.14)";
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(10, 23, 26, 0.36)";
-  for (const x of [-20, -7, 8, 22]) {
-    ctx.beginPath();
-    ctx.ellipse(x, 51 + Math.sin(x) * 1.4, 7, 3, -0.12, 0, Math.PI * 2);
-    ctx.fill();
   }
 
-  const tower = ctx.createLinearGradient(-22, -18, 22, 52);
-  tower.addColorStop(0, "#f1f6ef");
-  tower.addColorStop(0.35, "#dce9e3");
-  tower.addColorStop(0.68, "#b7c8c6");
-  tower.addColorStop(1, "#6b7f82");
-  ctx.fillStyle = tower;
-  ctx.beginPath();
-  ctx.moveTo(-18, 52);
-  ctx.lineTo(-11, -18);
-  ctx.lineTo(11, -18);
-  ctx.lineTo(18, 52);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = "rgba(7, 22, 27, 0.26)";
-  ctx.beginPath();
-  ctx.moveTo(5, -18);
-  ctx.lineTo(11, -18);
-  ctx.lineTo(18, 52);
-  ctx.lineTo(3, 52);
-  ctx.lineTo(1, -18);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.24)";
-  ctx.beginPath();
-  ctx.moveTo(-13, -15);
-  ctx.lineTo(-6, -18);
-  ctx.lineTo(-10, 50);
-  ctx.lineTo(-17, 52);
-  ctx.closePath();
-  ctx.fill();
-
-  for (const y of [-8, 14, 37]) {
-    ctx.strokeStyle = "rgba(17, 42, 47, 0.16)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(0, y, towerHalf(y), 2.2, 0, 0, Math.PI);
-    ctx.stroke();
+  ctx.strokeStyle = LA.outline; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.3; ctx.lineWidth = 0.7;
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r); ctx.stroke();
   }
+  ctx.globalAlpha = 1;
 
-  drawTowerBand(5, 10, "#c9625a", "#a63f3f");
-  drawTowerBand(27, 11, "#c9625a", "#a63f3f");
-
-  const door = ctx.createLinearGradient(-7, 34, 7, 52);
-  door.addColorStop(0, "#25464e");
-  door.addColorStop(1, "#10272e");
-  ctx.fillStyle = door;
-  ctx.beginPath();
-  ctx.roundRect(-6, 34, 12, 18, 5);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255, 211, 106, 0.72)";
-  ctx.beginPath();
-  ctx.arc(3.5, 43, 1.3, 0, Math.PI * 2);
-  ctx.fill();
-
-  const windowGlow = 0.46 + Math.sin(state.time * 2.4) * 0.08;
-  ctx.fillStyle = `rgba(255, 221, 139, ${windowGlow})`;
-  ctx.strokeStyle = "rgba(15, 35, 39, 0.54)";
-  ctx.lineWidth = 1.2;
-  for (const y of [-9, 18]) {
-    ctx.beginPath();
-    ctx.roundRect(-5, y, 10, 8, 3);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, y + 1);
-    ctx.lineTo(0, y + 7);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = "#1b3339";
-  ctx.beginPath();
-  ctx.ellipse(0, -17, 22, 5, 0, Math.PI, 0);
-  ctx.lineTo(18, -12);
-  ctx.lineTo(-18, -12);
-  ctx.closePath();
-  ctx.fill();
-
-  const balcony = ctx.createLinearGradient(-26, -25, 26, -16);
-  balcony.addColorStop(0, "#5f716d");
-  balcony.addColorStop(0.45, "#9aa39a");
-  balcony.addColorStop(1, "#2c4142");
-  ctx.fillStyle = balcony;
-  ctx.beginPath();
-  ctx.roundRect(-24, -24, 48, 7, 3);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(8, 21, 24, 0.65)";
-  ctx.lineWidth = 1;
-  for (let x = -18; x <= 18; x += 9) {
-    ctx.beginPath();
-    ctx.moveTo(x, -24);
-    ctx.lineTo(x + 1, -14);
-    ctx.stroke();
-  }
-
-  const lantern = ctx.createLinearGradient(-16, -41, 16, -20);
-  lantern.addColorStop(0, "rgba(198, 244, 236, 0.5)");
-  lantern.addColorStop(0.44, "rgba(255, 233, 157, 0.76)");
-  lantern.addColorStop(1, "rgba(35, 64, 70, 0.66)");
-  ctx.fillStyle = lantern;
-  ctx.beginPath();
-  ctx.moveTo(-13, -38);
-  ctx.lineTo(13, -38);
-  ctx.lineTo(15, -22);
-  ctx.lineTo(-15, -22);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "rgba(14, 31, 35, 0.72)";
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-5, -38);
-  ctx.lineTo(-5, -22);
-  ctx.moveTo(5, -38);
-  ctx.lineTo(5, -22);
-  ctx.stroke();
-
-  ctx.fillStyle = "#1b2e33";
-  ctx.beginPath();
-  ctx.moveTo(-18, -39);
-  ctx.lineTo(0, -51);
-  ctx.lineTo(18, -39);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = "#31474b";
-  ctx.beginPath();
-  ctx.moveTo(-11, -41);
-  ctx.lineTo(0, -49);
-  ctx.lineTo(12, -41);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = "#0e1d22";
-  ctx.fillRect(-3, -56, 6, 7);
-
+  const lampY = LAMP_OFFSET_Y;
   ctx.globalCompositeOperation = "lighter";
-  const lanternGlow = ctx.createRadialGradient(0, LAMP_OFFSET_Y, 2, 0, LAMP_OFFSET_Y, 30 + state.pulse * 10);
-  lanternGlow.addColorStop(0, `rgba(255, 220, 128, ${0.42 + state.pulse * 0.18})`);
-  lanternGlow.addColorStop(0.45, "rgba(255, 220, 128, 0.13)");
+  const lanternGlow = ctx.createRadialGradient(0, lampY, 2, 0, lampY, 24 + state.pulse * 12);
+  lanternGlow.addColorStop(0, `rgba(255, 220, 128, ${0.52 + state.pulse * 0.22})`);
+  lanternGlow.addColorStop(0.4, "rgba(255, 220, 128, 0.14)");
   lanternGlow.addColorStop(1, "rgba(255, 220, 128, 0)");
   ctx.fillStyle = lanternGlow;
-  ctx.beginPath();
-  ctx.arc(0, LAMP_OFFSET_Y, 30 + state.pulse * 10, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(0, lampY, 24 + state.pulse * 12, 0, Math.PI * 2); ctx.fill();
   ctx.globalCompositeOperation = "source-over";
 
   ctx.fillStyle = "#ffd36a";
-  ctx.beginPath();
-  ctx.arc(0, LAMP_OFFSET_Y, 8 + state.pulse * 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255, 238, 168, 0.56)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(0, LAMP_OFFSET_Y, 13 + state.pulse * 5, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, lampY, 6 + state.pulse * 3, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(255, 238, 168, 0.65)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, lampY, 10 + state.pulse * 5, 0, Math.PI * 2); ctx.stroke();
+
+  // Upgrade level pips
+  if (state.upgradeLevel > 0) {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = LA.gold;
+    for (let u = 0; u < state.upgradeLevel; u++) {
+      const ua = (u / 3) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(ua) * (r + 10), Math.sin(ua) * (r + 10), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   ctx.restore();
 }
 
 function drawHarbor() {
   ctx.save();
-  const harborGlow = ctx.createRadialGradient(harbor.x, harbor.y, 4, harbor.x, harbor.y, harbor.r * 1.9);
-  harborGlow.addColorStop(0, "rgba(216, 251, 239, 0.13)");
-  harborGlow.addColorStop(0.52, "rgba(216, 251, 239, 0.06)");
-  harborGlow.addColorStop(1, "rgba(216, 251, 239, 0)");
+  const harborGlow = ctx.createRadialGradient(harbor.x, harbor.y, 10, harbor.x, harbor.y, harbor.r * 1.8);
+  harborGlow.addColorStop(0, "rgba(240, 200, 60, 0.18)");
+  harborGlow.addColorStop(0.6, "rgba(240, 200, 60, 0.07)");
+  harborGlow.addColorStop(1, "rgba(240, 200, 60, 0)");
   ctx.fillStyle = harborGlow;
   ctx.beginPath();
-  ctx.arc(harbor.x, harbor.y, harbor.r * 1.9, 0, Math.PI * 2);
+  ctx.arc(harbor.x, harbor.y, harbor.r * 1.8, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(216, 251, 239, 0.42)";
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 7]);
+
+  ctx.strokeStyle = LA.gold;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 8]);
+  ctx.globalAlpha = 0.6;
   ctx.beginPath();
   ctx.arc(harbor.x, harbor.y, harbor.r, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle = "#533f2d";
-  ctx.fillRect(harbor.x - 48, harbor.y + 25, 96, 9);
-  ctx.fillStyle = "#ffd36a";
-  for (const x of [-34, 0, 34]) {
-    const glow = 2.4 + Math.min(5, state.streak) * 0.45 + Math.sin(state.time * 4 + x) * 0.35;
-    ctx.beginPath();
-    ctx.arc(harbor.x + x, harbor.y + 21, glow, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
-
 function draw() {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -1477,9 +1035,11 @@ function draw() {
     ctx.translate(Math.sin(state.time * 74) * strength, Math.cos(state.time * 61) * strength);
   }
   drawSea(w, h);
-  drawCoastline(w, h);
+  drawMonsters();
+  drawRocks(w, h);
   drawHarbor();
   drawBeam();
+  drawIsland();
   for (const boat of state.boats) drawBoat(boat);
   drawLighthouse();
 
