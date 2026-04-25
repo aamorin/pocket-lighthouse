@@ -52,7 +52,7 @@ const UPGRADES = [
 
 const ISLAND_R = 34;
 const harbor = { x: 0, y: 0, r: 58 };
-const lighthouse = { x: 0, y: 0, r: 22 };
+const lighthouse = { x: 0, y: 0, r: 15 };
 const texture = { grain: null, stipple: null };
 const LAMP_OFFSET_Y = 0;
 
@@ -720,35 +720,89 @@ function drawIsland() {
   const cy = lighthouse.y;
   ctx.save();
 
-  // Island shadow
-  ctx.fillStyle = "rgba(0, 10, 40, 0.35)";
-  ctx.beginPath();
-  ctx.ellipse(cx + 5, cy + 6, ISLAND_R + 8, ISLAND_R + 5, 0, 0, Math.PI * 2);
+  const sandR = ISLAND_R + 14;
+  const STEPS = 64;
+
+  // Build irregular coastline: layered sines give natural bumpiness
+  function buildCoast(baseR, a1, a2, a3) {
+    const pts = [];
+    for (let i = 0; i < STEPS; i++) {
+      const a = (i / STEPS) * Math.PI * 2;
+      const r = baseR
+        + Math.sin(a * 3 + 1.1) * a1
+        + Math.sin(a * 5 + 2.3) * a2
+        + Math.sin(a * 7 + 0.7) * a3;
+      pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+    }
+    return pts;
+  }
+
+  function tracePts(pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+  }
+
+  function traceInflated(pts, amount) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const dx = pts[i].x - cx, dy = pts[i].y - cy;
+      const d = Math.hypot(dx, dy);
+      const s = (d + amount) / d;
+      if (i === 0) ctx.moveTo(cx + dx * s, cy + dy * s);
+      else ctx.lineTo(cx + dx * s, cy + dy * s);
+    }
+    ctx.closePath();
+  }
+
+  function traceOffset(pts, ox, oy) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x + ox, pts[0].y + oy);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x + ox, pts[i].y + oy);
+    ctx.closePath();
+  }
+
+  const sandPts = buildCoast(sandR, 6, 3.5, 2);
+  const rockPts = buildCoast(ISLAND_R + 4, 4, 2, 1.5);
+
+  // Island shadow: uniform dark halo around the irregular contour
+  ctx.fillStyle = "rgba(0, 10, 40, 0.32)";
+  traceInflated(sandPts, 7);
   ctx.fill();
 
-  // Island rock/earth base
-  const islandGrad = ctx.createRadialGradient(cx - 6, cy - 6, 4, cx, cy, ISLAND_R + 4);
-  islandGrad.addColorStop(0, "#c8b880");
-  islandGrad.addColorStop(0.4, "#a09060");
-  islandGrad.addColorStop(0.75, "#786840");
-  islandGrad.addColorStop(1, "#504828");
-  ctx.fillStyle = islandGrad;
+  // Sand coast
+  const sandGrad = ctx.createRadialGradient(cx, cy, ISLAND_R - 2, cx, cy, sandR + 6);
+  sandGrad.addColorStop(0, LA.sandLight);
+  sandGrad.addColorStop(0.55, LA.sand);
+  sandGrad.addColorStop(1, LA.sandDark);
+  ctx.fillStyle = sandGrad;
   ctx.strokeStyle = LA.outline;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(cx, cy, ISLAND_R + 4, 0, Math.PI * 2);
+  ctx.lineWidth = 1.5;
+  tracePts(sandPts);
   ctx.fill();
   ctx.stroke();
 
-  // Shore ring (sand/surf)
+  // Island green land
+  const islandGrad = ctx.createRadialGradient(cx - 4, cy - 4, 3, cx, cy, ISLAND_R + 6);
+  islandGrad.addColorStop(0, LA.landLight);
+  islandGrad.addColorStop(0.5, LA.land);
+  islandGrad.addColorStop(1, LA.landDark);
+  ctx.fillStyle = islandGrad;
+  ctx.strokeStyle = LA.outline;
+  ctx.lineWidth = 2;
+  tracePts(rockPts);
+  ctx.fill();
+  ctx.stroke();
+
+  // Surf/foam ring traces the irregular sand edge
   ctx.strokeStyle = LA.seaFoam;
   ctx.lineWidth = 2.5;
   const surf = Math.sin(state.time * 2.2) * 0.5 + 0.5;
   ctx.globalAlpha = 0.35 + surf * 0.25;
   ctx.setLineDash([8, 6]);
   ctx.lineDashOffset = -state.time * 15;
-  ctx.beginPath();
-  ctx.arc(cx, cy, ISLAND_R + 6, 0, Math.PI * 2);
+  traceInflated(sandPts, 3);
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
@@ -944,10 +998,6 @@ function drawLighthouse() {
   ctx.translate(lighthouse.x, lighthouse.y);
   const r = lighthouse.r;
 
-  ctx.fillStyle = "rgba(0, 10, 30, 0.32)";
-  ctx.beginPath();
-  ctx.ellipse(5, 6, r + 7, r + 5, 0, 0, Math.PI * 2);
-  ctx.fill();
 
   ctx.fillStyle = "#c0b090";
   ctx.strokeStyle = LA.outline; ctx.lineWidth = 2;
@@ -1015,15 +1065,6 @@ function drawHarbor() {
   ctx.arc(harbor.x, harbor.y, harbor.r * 1.8, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = LA.gold;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6, 8]);
-  ctx.globalAlpha = 0.6;
-  ctx.beginPath();
-  ctx.arc(harbor.x, harbor.y, harbor.r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.globalAlpha = 1;
   ctx.restore();
 }
 function draw() {
@@ -1038,10 +1079,10 @@ function draw() {
   drawMonsters();
   drawRocks(w, h);
   drawHarbor();
-  drawBeam();
   drawIsland();
   for (const boat of state.boats) drawBoat(boat);
   drawLighthouse();
+  drawBeam();
 
   for (const spark of state.sparks) {
     ctx.globalAlpha = Math.max(0, spark.life * 1.8);
