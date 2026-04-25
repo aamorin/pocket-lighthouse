@@ -43,6 +43,9 @@ const state = {
   upgradeLevel: 0,
   upgradeFlash: 0,
   upgradeText: "",
+  maelstroms: [],
+  lightningTimer: 10,
+  beamStunned: 0,
 };
 
 const UPGRADES = [
@@ -116,12 +119,12 @@ function spawnBoat() {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   const side = Math.floor(Math.random() * 4); // 0=top 1=right 2=bottom 3=left
-  let x, y, vx, vy;
+  let x, y, vx, vy, exitTarget;
   const margin = 28;
-  if (side === 0)      { x = rand(margin, w - margin); y = -margin; vx = rand(-8, 8); vy = rand(10, 18); }
-  else if (side === 1) { x = w + margin; y = rand(margin, h - margin); vx = rand(-18, -10); vy = rand(-8, 8); }
-  else if (side === 2) { x = rand(margin, w - margin); y = h + margin; vx = rand(-8, 8); vy = rand(-18, -10); }
-  else                 { x = -margin; y = rand(margin, h - margin); vx = rand(10, 18); vy = rand(-8, 8); }
+  if (side === 0)      { x = rand(margin, w - margin); y = -margin; vx = rand(-8, 8); vy = rand(10, 18); exitTarget = { x: rand(margin, w - margin), y: h + margin }; }
+  else if (side === 1) { x = w + margin; y = rand(margin, h - margin); vx = rand(-18, -10); vy = rand(-8, 8); exitTarget = { x: -margin, y: rand(margin, h - margin) }; }
+  else if (side === 2) { x = rand(margin, w - margin); y = h + margin; vx = rand(-8, 8); vy = rand(-18, -10); exitTarget = { x: rand(margin, w - margin), y: -margin }; }
+  else                 { x = -margin; y = rand(margin, h - margin); vx = rand(10, 18); vy = rand(-8, 8); exitTarget = { x: w + margin, y: rand(margin, h - margin) }; }
 
   // Variable boat size → point value
   const tier = Math.random();
@@ -140,6 +143,8 @@ function spawnBoat() {
     canopy: Math.random() < 0.62,
     mast: Math.random() < 0.72,
     wake: [],
+    exitTarget,
+    entered: false,
   });
 }
 
@@ -154,6 +159,18 @@ function spawnMonster(big) {
     y = rand(40, h - 40);
   } while (Math.hypot(x - cx, y - cy) < 160);
   state.monsters.push({ x, y, vx: 0, vy: 0, lit: 0, visible: 0, phase: rand(0, Math.PI * 2), big: !!big, size: big ? 28 : 14 });
+}
+
+function spawnMaelstrom() {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  let x, y;
+  do {
+    x = rand(90, w - 90);
+    y = rand(90, h - 90);
+  } while (Math.hypot(x - lighthouse.x, y - lighthouse.y) < 190);
+  const angle = rand(0, Math.PI * 2);
+  state.maelstroms.push({ x, y, vx: Math.cos(angle) * 9, vy: Math.sin(angle) * 9, phase: 0, r: 52, life: rand(16, 28) });
 }
 
 function seedRain(w, h) {
@@ -218,6 +235,7 @@ function makePattern(size, drawPattern) {
 }
 
 function boatInBeam(boat) {
+  if (state.beamStunned > 0) return false;
   const lamp = lampPoint();
   const dx = boat.x - lamp.x;
   const dy = boat.y - lamp.y;
@@ -295,6 +313,7 @@ function boatHitsIsland(boat) {
 }
 
 function monsterInBeam(m) {
+  if (state.beamStunned > 0) return false;
   const lamp = lampPoint();
   const dx = m.x - lamp.x;
   const dy = m.y - lamp.y;
@@ -341,13 +360,18 @@ function update(dt) {
     if (state.weatherTimer > weatherInterval) {
       state.weatherLevel++;
       state.weatherTimer = 0;
-      if (state.weatherLevel === 4) state.wildDuration = rand(25, 42);
+      if (state.weatherLevel === 4) {
+        state.wildDuration = rand(25, 42);
+        state.lightningTimer = rand(8, 15);
+      }
       statusEl.textContent = ["", "Mist rolling in. Keep the light steady.", "Rain! Boats lose their way faster.", "Gale force winds — boats panic without light.", "Wild storm! Every second in the dark is dangerous."][state.weatherLevel];
     }
   } else if (state.weatherTimer > state.wildDuration) {
     // Storm breaks — drop back to Mist and let it climb again
     state.weatherLevel = 1;
     state.weatherTimer = 0;
+    state.maelstroms = [];
+    state.beamStunned = 0;
     statusEl.textContent = "Storm breaking. A brief calm…";
   }
 
@@ -381,6 +405,26 @@ function update(dt) {
   if (stormLevel >= 4 && Math.random() < dt * 0.008 && !state.monsters.some(m => m.big)) {
     spawnMonster(true);
   }
+  // Spawn maelstrom under wild weather — up to 2 at once
+  if (stormLevel >= 4 && state.maelstroms.length < 2 && Math.random() < dt * 0.007) {
+    spawnMaelstrom();
+  }
+  // Wild lightning: briefly stuns the beam and panics boats in darkness
+  if (stormLevel >= 4) {
+    state.lightningTimer -= dt;
+    if (state.lightningTimer <= 0) {
+      state.lightningTimer = rand(8, 17);
+      state.shake = 0.52;
+      state.flash = 0.65;
+      state.flashColor = "#cce8ff";
+      for (const boat of state.boats) {
+        if (!boatInBeam(boat)) boat.panic = Math.min(1, boat.panic + 0.4);
+      }
+      state.beamStunned = 0.88;
+      statusEl.textContent = "Lightning! The beam flickered — boats are in the dark!";
+    }
+  }
+  state.beamStunned = Math.max(0, state.beamStunned - dt);
 
   // Guidance decay rate scales with weather
   const guidanceLoss = 0.55 + stormLevel * 0.18;
@@ -396,33 +440,60 @@ function update(dt) {
       addFloater(boat.x, boat.y - 18, "!", "#ff6a5f", 0.72);
     }
 
-    const targetAngle = angleTo(boat, harbor);
+    const targetAngle = angleTo(boat, boat.exitTarget);
     const currentAngle = Math.atan2(boat.vy, boat.vx);
     const steerPower = boat.guidance * boat.guidance;
 
-    // Storm drift: random wandering direction, stronger in worse weather
+    // Unguided: gradually lose bearing — wander off course into hazards
     const wanderAng = boat.bob + state.time * (0.4 + stormLevel * 0.15);
     const stormPull = Math.atan2(Math.sin(wanderAng), Math.cos(wanderAng));
     const aimAngle = steerPower > 0.04 ? targetAngle : stormPull;
 
-    // Rock avoidance when lit (guided)
+    // Island avoidance — always active; strength scales up with guidance
+    // Even unlit boats sense the island up close; lit boats steer wide from far away
     let avoidSteer = 0;
-    if (steerPower > 0.1) {
-      const { ax, ay } = rockAvoidance(boat);
+    {
+      const avoid = steerPower > 0.05 ? rockAvoidance(boat) : { ax: 0, ay: 0 };
+      let ax = avoid.ax;
+      let ay = avoid.ay;
+      const idx = boat.x - lighthouse.x;
+      const idy = boat.y - lighthouse.y;
+      const idist = Math.hypot(idx, idy);
+      const islandDanger = ISLAND_R * 5.5;
+      if (idist < islandDanger && idist > 0) {
+        const guidedScale = 0.28 + steerPower * 0.72;
+        const strength = (1 - idist / islandDanger) * 3.2 * guidedScale;
+        ax += (idx / idist) * strength;
+        ay += (idy / idist) * strength;
+      }
       const avoidAngle = Math.atan2(ay, ax);
       const avoidStrength = Math.hypot(ax, ay);
       if (avoidStrength > 0.05) {
-        avoidSteer = angleDelta(avoidAngle, currentAngle) * avoidStrength * 0.28 * steerPower;
+        avoidSteer = angleDelta(avoidAngle, currentAngle) * Math.min(avoidStrength, 2.0) * 0.32;
       }
     }
 
-    const steer = angleDelta(aimAngle, currentAngle) * (0.012 + steerPower * 0.12);
+    const steer = angleDelta(aimAngle, currentAngle) * (0.012 + steerPower * 0.22);
     const nextAngle = currentAngle + steer + avoidSteer + boat.drift * dt * (1.2 + boat.panic + stormLevel * 0.2);
     const speed = boat.speed * (0.56 + steerPower * 0.95 + boat.panic * 0.1);
     boat.vx = Math.cos(nextAngle) * speed;
     boat.vy = Math.sin(nextAngle) * speed;
     boat.x += boat.vx * dt;
     boat.y += boat.vy * dt;
+
+    // Maelstrom: pull unguided boats toward vortex
+    if (boat.guidance < 0.25) {
+      for (const m of state.maelstroms) {
+        const mx = m.x - boat.x;
+        const my = m.y - boat.y;
+        const md = Math.hypot(mx, my);
+        if (md < m.r * 2.8 && md > 0) {
+          const pull = (1 - md / (m.r * 2.8)) * 22 * dt;
+          boat.x += (mx / md) * pull;
+          boat.y += (my / md) * pull;
+        }
+      }
+    }
 
     if (boat.wake.length === 0 || Math.hypot(boat.x - boat.wake[0].x, boat.y - boat.wake[0].y) > 10) {
       boat.wake.unshift({ x: boat.x, y: boat.y, a: Math.atan2(boat.vy, boat.vx), size: boat.size, life: 1 });
@@ -434,18 +505,19 @@ function update(dt) {
   // Resolve boats
   for (let i = state.boats.length - 1; i >= 0; i--) {
     const boat = state.boats[i];
-    const bowAngle = Math.atan2(boat.vy, boat.vx);
-    const bowX = boat.x + Math.cos(bowAngle) * boat.size * 1.15;
-    const bowY = boat.y + Math.sin(bowAngle) * boat.size * 1.15;
-    const distToIsland = Math.hypot(bowX - harbor.x, bowY - harbor.y);
-    const arrived = distToIsland < harbor.r;
-    const wrecked = boatHitsRock(boat);
-    const hitIsland = boatHitsIsland(boat);
     const w = canvas.clientWidth; const h = canvas.clientHeight;
     const offscreen = boat.y > h + 50 || boat.y < -50 || boat.x < -80 || boat.x > w + 80;
+    if (!boat.entered) {
+      boat.entered = boat.x > 0 && boat.x < w && boat.y > 0 && boat.y < h;
+    }
+    const arrived = boat.entered && offscreen;
+    const wrecked = boatHitsRock(boat);
+    const hitIsland = boatHitsIsland(boat);
     // Monster attack
     const eaten = state.monsters.some(m => !monsterInBeam(m) && Math.hypot(boat.x - m.x, boat.y - m.y) < m.size * 2.5 + boat.size);
-    const lost = wrecked || hitIsland || offscreen || eaten;
+    const swallowed = state.maelstroms.some(m => Math.hypot(boat.x - m.x, boat.y - m.y) < 22);
+    const lost = wrecked || hitIsland || eaten || swallowed;
+    const vanished = !boat.entered && offscreen;
 
     if (arrived) {
       const pts = boat.value ?? 1;
@@ -458,7 +530,7 @@ function update(dt) {
       burst(boat.x, boat.y, "#ffd36a", 18 + pts * 8 + Math.min(10, state.streak * 2));
       addFloater(boat.x, boat.y - 18, state.streak > 1 ? `×${state.streak}` : `+${pts}`, "#ffd36a");
       state.boats.splice(i, 1);
-      statusEl.textContent = state.streak > 2 ? `Streak ${state.streak}! Keep that beam steady.` : "Safe harbor. Another boat makes it.";
+      statusEl.textContent = state.streak > 2 ? `Streak ${state.streak}! Keep that beam steady.` : "Safe passage! Guided clear of the rocks.";
     } else if (lost) {
       state.misses += 1;
       state.streak = 0;
@@ -468,10 +540,12 @@ function update(dt) {
       const bx = Math.max(28, Math.min(w - 28, boat.x));
       const by = Math.max(28, Math.min(h - 28, boat.y));
       burst(bx, by, "#ff6a5f", 26);
-      const reason = eaten ? "monster!" : wrecked ? "rocks!" : hitIsland ? "island!" : "lost";
+      const reason = eaten ? "monster!" : swallowed ? "maelstrom!" : wrecked ? "rocks!" : "island!";
       addFloater(bx, by - 20, reason, "#ff6a5f");
       state.boats.splice(i, 1);
-      statusEl.textContent = eaten ? "A sea monster took a boat. Light the dark!" : wrecked ? "A boat hit the rocks. Watch the shadows." : hitIsland ? "A boat ran aground. Guide them wide." : "A boat vanished into the storm.";
+      statusEl.textContent = eaten ? "A sea monster took a boat. Light the dark!" : swallowed ? "A maelstrom swallowed a boat. Keep them lit!" : wrecked ? "A boat hit the rocks. Sweep the beam ahead." : "A boat ran aground. Guide them wide of the island.";
+    } else if (vanished) {
+      state.boats.splice(i, 1);
     }
   }
 
@@ -517,6 +591,18 @@ function update(dt) {
     if (m.lit > banishThreshold || m.x < -80 || m.x > w + 80 || m.y < -80 || m.y > h + 80) {
       if (m.lit > banishThreshold) burst(m.x, m.y, m.big ? "#ff88ff" : "#5588ff", m.big ? 24 : 14);
       state.monsters.splice(i, 1);
+    }
+  }
+
+  for (let i = state.maelstroms.length - 1; i >= 0; i--) {
+    const m = state.maelstroms[i];
+    m.phase += dt * 1.8;
+    m.x += m.vx * dt;
+    m.y += m.vy * dt;
+    m.life -= dt;
+    const mw = canvas.clientWidth; const mh = canvas.clientHeight;
+    if (m.life <= 0 || m.x < -90 || m.x > mw + 90 || m.y < -90 || m.y > mh + 90) {
+      state.maelstroms.splice(i, 1);
     }
   }
 
@@ -690,6 +776,53 @@ function drawRocks(w, h) {
   ctx.restore();
 }
 
+function drawMaelstroms() {
+  if (!state.maelstroms.length) return;
+  ctx.save();
+  for (const m of state.maelstroms) {
+    const t = m.phase;
+    // Outer warning ripples
+    for (let ring = 4; ring >= 1; ring--) {
+      const rr = m.r * (0.5 + ring * 0.22) + Math.sin(t * 2.4 + ring) * 5;
+      ctx.globalAlpha = 0.05 + ring * 0.035;
+      ctx.strokeStyle = "#003366";
+      ctx.lineWidth = ring === 1 ? 1.5 : 1;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, rr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // Spinning spiral arms
+    for (let arm = 0; arm < 4; arm++) {
+      const baseAngle = t * 2.5 + (arm / 4) * Math.PI * 2;
+      ctx.globalAlpha = 0.48;
+      ctx.strokeStyle = arm % 2 === 0 ? "rgba(0,15,70,0.75)" : "rgba(0,8,45,0.55)";
+      ctx.lineWidth = 2.5 - arm * 0.3;
+      ctx.beginPath();
+      for (let j = 0; j <= 24; j++) {
+        const frac = j / 24;
+        const a = baseAngle + frac * Math.PI * 1.6;
+        const r = m.r * (1 - frac) * 0.88;
+        const px = m.x + Math.cos(a) * r;
+        const py = m.y + Math.sin(a) * r;
+        j === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    // Dark void center
+    const vg = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, m.r * 0.48);
+    vg.addColorStop(0, "rgba(0,0,8,0.92)");
+    vg.addColorStop(0.55, "rgba(0,4,28,0.62)");
+    vg.addColorStop(1, "rgba(0,8,45,0)");
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = vg;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r * 0.48, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
 function drawMonsters() {
   ctx.save();
   for (const m of state.monsters) {
@@ -857,6 +990,7 @@ function drawIsland() {
 }
 
 function drawBeam() {
+  if (state.beamStunned > 0 && Math.random() < 0.72) return;
   const lamp = lampPoint();
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -1112,9 +1246,9 @@ function draw() {
     ctx.translate(Math.sin(state.time * 74) * strength, Math.cos(state.time * 61) * strength);
   }
   drawSea(w, h);
+  drawMaelstroms();
   drawMonsters();
   drawRocks(w, h);
-  drawHarbor();
   drawIsland();
   for (const boat of state.boats) drawBoat(boat);
   drawLighthouse();
