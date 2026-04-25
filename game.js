@@ -421,7 +421,10 @@ function update(dt) {
   // Resolve boats
   for (let i = state.boats.length - 1; i >= 0; i--) {
     const boat = state.boats[i];
-    const distToIsland = Math.hypot(boat.x - harbor.x, boat.y - harbor.y);
+    const bowAngle = Math.atan2(boat.vy, boat.vx);
+    const bowX = boat.x + Math.cos(bowAngle) * boat.size * 1.15;
+    const bowY = boat.y + Math.sin(bowAngle) * boat.size * 1.15;
+    const distToIsland = Math.hypot(bowX - harbor.x, bowY - harbor.y);
     const arrived = distToIsland < harbor.r && boat.guidance > 0.32;
     const wrecked = boatHitsRock(boat);
     const hitIsland = boatHitsIsland(boat);
